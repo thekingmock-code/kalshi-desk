@@ -1,3 +1,5 @@
+node_modules/
+.next/
 agent-tools/
 .env
 .env.*

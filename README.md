@@ -1,6 +1,23 @@
-# Kalshi 15m edge scanner
+# XVANTAGE // SIGNALS
 
-Paper-trade / logging only: compares a driftless lognormal fair value (from Coinbase + Kraken spot and realized vol) against Kalshi 15-minute BTC and SOL binary markets. **Does not place orders.**
+Paper-only 15-minute desk for Kalshi BTC and SOL markets, plus a Python logger. **Nothing in this repo places orders.**
+
+## Web desk
+
+Teaching chart (candles, EMA, bands, VWAP, strike, vol cone), live Up/Down ticket, and a strategy lab: edge, cushion, and momentum gates, exit rules, and a local journal.
+
+```bash
+npm install
+npm run dev
+```
+
+Open [http://127.0.0.1:43123](http://127.0.0.1:43123). The page polls `/api/desk` every 2 seconds.
+
+Optional CF Benchmarks index (BRTI / SOLUSD_RTI) uses the same env vars as the scanner (`.env.example`). Next.js reads them from the environment, not from a committed file. Without a key, the model uses the Coinbase + Kraken composite and the index field stays empty.
+
+## Python scanner
+
+Log-only edge scanner: composite spot, realized vol, Kalshi asks, CSV when edge clears `MIN_EDGE`.
 
 ## Requirements
 
