@@ -2,7 +2,8 @@
 Kalshi 15m mispricing scanner (paper-trade / logging only, places NO orders).
 
 Flow:
-  Coinbase + Kraken spot -> composite price -> realized vol
+  CF Benchmarks (Kalshi passthrough) when creds set, else Coinbase + Kraken spot
+  -> price history -> realized vol
   Kalshi open markets (strike, ask, close time)
   fair prob = N(d2)  ->  edge = fair prob - ask - fee  ->  log if edge >= MIN_EDGE
 """
@@ -18,11 +19,18 @@ from datetime import datetime, timezone
 
 import websockets
 
+from kalshi_auth import kalshi_get, load_private_key_from_env
+
 # ====================== CONFIG ======================
 LOG_FILE = "kalshi_edge_log.csv"
 # Production Trade API (elections host is equivalent; see Kalshi docs)
-KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_BASE = os.environ.get(
+    "KALSHI_API_BASE", "https://api.elections.kalshi.com/trade-api/v2"
+)
 SERIES = {"BTC": "KXBTC15M", "SOL": "KXSOL15M"}
+# CF Benchmarks index IDs (Kalshi settlement reference)
+CFB_INDEX = {"BTC": "BRTI", "SOL": "SOLUSD_RTI"}
+CFB_POLL_SECS = 1.0
 
 MIN_EDGE = 0.05  # require 5 points of edge after fees
 PRICE_CEILING = 0.25  # risk filter only (None to disable); NOT the signal
@@ -37,12 +45,14 @@ state = {
     a: {
         "coinbase": (0.0, 0.0),  # (price, timestamp)
         "kraken": (0.0, 0.0),
+        "cfb": (0.0, 0.0),  # CF Benchmarks RTI via Kalshi passthrough
         "history": deque(maxlen=600),  # 1 sample/sec, ~10 min
         "markets": [],
     }
     for a in SERIES
 }
 last_logged = {}  # (ticker, side) -> time
+_kalshi_creds: tuple[str | None, object | None] = (None, None)
 
 
 def init_log():
@@ -55,6 +65,7 @@ def init_log():
                     "ticker",
                     "side",
                     "spot",
+                    "price_source",
                     "strike",
                     "secs_left",
                     "sigma_T",
@@ -93,7 +104,7 @@ def realized_sigma_per_sec(history):
     return math.sqrt(var)
 
 
-def composite(asset):
+def composite_exchange(asset):
     s = state[asset]
     now = time.time()
     fresh = [
@@ -102,6 +113,38 @@ def composite(asset):
         if p > 0 and now - ts <= STALE_SECS
     ]
     return sum(fresh) / len(fresh) if fresh else None
+
+
+def mark_price(asset):
+    """Settlement-aligned CF index when available, else exchange composite."""
+    s = state[asset]
+    now = time.time()
+    p, ts = s["cfb"]
+    if p > 0 and now - ts <= STALE_SECS:
+        return p, "cfb"
+    ex = composite_exchange(asset)
+    if ex is not None:
+        return ex, "exchange"
+    return None, None
+
+
+def _parse_cfb_value(body: dict) -> float | None:
+    """Extract latest index level from Kalshi cfbenchmarks envelope."""
+    data = body.get("data") or body
+    payload = data.get("payload") if isinstance(data, dict) else None
+    if isinstance(payload, list) and payload:
+        raw = payload[-1].get("value")
+    elif isinstance(payload, dict):
+        raw = payload.get("value")
+        if raw is None and payload.get("values"):
+            vals = payload["values"]
+            if vals:
+                raw = vals[-1].get("value")
+    else:
+        return None
+    if raw is None:
+        return None
+    return float(raw)
 
 
 # ====================== SPOT FEEDS ======================
@@ -182,6 +225,30 @@ def _price(m, key):
     return None
 
 
+async def poll_cfbenchmarks():
+    """Kalshi-authenticated CF Benchmarks RTI (BRTI / SOLUSD_RTI)."""
+    api_key_id, private_key = _kalshi_creds
+    if not api_key_id or not private_key:
+        return
+    while True:
+        for asset, index_id in CFB_INDEX.items():
+            try:
+                body = await asyncio.to_thread(
+                    kalshi_get,
+                    KALSHI_BASE,
+                    api_key_id,
+                    private_key,
+                    "/cfbenchmarks/values",
+                    query={"id": index_id},
+                )
+                price = _parse_cfb_value(body)
+                if price is not None and price > 0:
+                    state[asset]["cfb"] = (price, time.time())
+            except Exception as e:
+                print(f"CF Benchmarks poll error ({asset}/{index_id}): {e}")
+        await asyncio.sleep(CFB_POLL_SECS)
+
+
 async def poll_kalshi():
     """Public market data. Field names may differ: check Kalshi API docs."""
     while True:
@@ -229,7 +296,7 @@ async def evaluator():
         await asyncio.sleep(1.0)
         now = time.time()
         for asset, s in state.items():
-            spot = composite(asset)
+            spot, source = mark_price(asset)
             if spot is None:
                 continue
             s["history"].append(spot)
@@ -262,7 +329,8 @@ async def evaluator():
                         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                         print(
                             f"[EDGE] {m['ticker']} {side} ask={ask:.2f} "
-                            f"fair={fair:.2f} edge={edge:+.3f} left={secs_left:.0f}s"
+                            f"fair={fair:.2f} edge={edge:+.3f} left={secs_left:.0f}s "
+                            f"src={source}"
                         )
                         log_signal(
                             [
@@ -271,6 +339,7 @@ async def evaluator():
                                 m["ticker"],
                                 side,
                                 f"{spot:.2f}",
+                                source,
                                 m["strike"],
                                 f"{secs_left:.0f}",
                                 f"{sigma_T:.5f}",
@@ -283,11 +352,21 @@ async def evaluator():
 
 
 async def main():
+    global _kalshi_creds
     init_log()
+    _kalshi_creds = load_private_key_from_env()
+    api_key_id, private_key = _kalshi_creds
+    if api_key_id and private_key:
+        print("Kalshi credentials found — using CF Benchmarks RTI for mark price")
+    elif api_key_id:
+        print("KALSHI_ACCESS_KEY set but no private key — exchange composite only")
+    else:
+        print("No Kalshi API creds — exchange composite only (set KALSHI_ACCESS_KEY)")
     print("Starting edge scanner (log only, no orders)...")
-    await asyncio.gather(
-        stream_coinbase(), stream_kraken(), poll_kalshi(), evaluator()
-    )
+    tasks = [stream_coinbase(), stream_kraken(), poll_kalshi(), evaluator()]
+    if api_key_id and private_key:
+        tasks.append(poll_cfbenchmarks())
+    await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":

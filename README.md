@@ -10,14 +10,24 @@ Paper-trade / logging only: compares a driftless lognormal fair value (from Coin
 ## Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+### Kalshi API (CF Benchmarks BRTI / SOLUSD_RTI)
+
+Copy `.env.example` to `.env` (or export variables). The scanner uses Kalshi’s [CF Benchmarks REST passthrough](https://docs.kalshi.com/cfbenchmarks/rest-passthrough) when credentials are set:
+
+- `KALSHI_ACCESS_KEY` — API key ID from Kalshi → Account & security → API Keys  
+- `KALSHI_PRIVATE_KEY` or `KALSHI_PRIVATE_KEY_PATH` — PEM private key from key creation  
+
+**Do not commit keys.** If a key was pasted into chat or committed, revoke it in Kalshi and create a new one.
+
+Without credentials, the scanner falls back to Coinbase + Kraken composite spot.
 
 ## Run
 
 ```bash
+# optional: export KALSHI_ACCESS_KEY and KALSHI_PRIVATE_KEY_PATH
 python scanner.py
 ```
 
@@ -25,7 +35,7 @@ Stop with `Ctrl+C`. Signals append to `kalshi_edge_log.csv`.
 
 ## What it does
 
-1. **Spot** — WebSocket tickers from Coinbase Advanced Trade and Kraken v2; composite mid when both feeds are fresh (≤ 5s).
+1. **Mark price** — CF Benchmarks RTI via Kalshi (`BRTI`, `SOLUSD_RTI`) when API creds are set; otherwise Coinbase + Kraken composite (≤ 5s stale filter).
 2. **Vol** — Realized per-second σ from ~60+ seconds of composite log returns.
 3. **Kalshi** — Polls open markets for series `KXBTC15M` and `KXSOL15M` every 2s (strike, yes/no ask, close time).
 4. **Fair value** — `P(S_T > K) ≈ N(d2)` with no drift.
@@ -46,7 +56,7 @@ Edit constants at the top of `scanner.py`:
 
 ## Model caveat
 
-Kalshi 15m crypto markets settle on **CF Benchmarks BRTI** averages, not exchange spot. This scanner uses exchange composite price and `floor_strike` as a practical proxy; treat outputs as research signals, not guaranteed fair value vs settlement.
+Kalshi 15m crypto markets settle on **60-second CF Benchmarks averages** at window boundaries, not a single RTI tick. With Kalshi creds, mark price uses live RTI; vol is still estimated from recent RTI history. The lognormal `N(d2)` model and `floor_strike` remain approximations—validate against market rules before trading.
 
 ## API references
 

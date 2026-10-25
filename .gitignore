@@ -1,3 +1,9 @@
+agent-tools/
+.env
+.env.*
+!.env.example
+.kalshi*.pem
+kalshi*.key
 __pycache__/
 *.py[cod]
 .venv/
