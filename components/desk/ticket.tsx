@@ -32,6 +32,7 @@ export function Ticket({
   onSide,
   onForce,
   notice,
+  variant = "page",
 }: {
   snap: DeskSnapshot;
   t: Copy;
@@ -44,6 +45,7 @@ export function Ticket({
   onSide: (side: "UP" | "DOWN") => void;
   onForce: (() => void) | null;
   notice: string | null;
+  variant?: "page" | "dock";
 }) {
   const market = snap.market;
   const [now, setNow] = useState(() => Date.now());
@@ -71,6 +73,76 @@ export function Ticket({
     const y = 36 - ((c - min) / span) * 32;
     return `${x},${y}`;
   });
+
+  const buttons = (
+    <div className="grid grid-cols-2 gap-2">
+      <button
+        type="button"
+        disabled={upPrice == null}
+        onClick={() => onSide("UP")}
+        className="min-h-14 rounded-xl bg-[#1f8f5f] py-3 text-white shadow-inner active:bg-[#187a50] disabled:opacity-40"
+      >
+        <span className="block text-lg font-semibold">
+          {t.upWord} {upPrice == null ? "—" : cents(upPrice)}
+        </span>
+        <span className="font-mono text-xs text-emerald-100/80">
+          {upPrice && upPrice > 0 ? `${(1 / upPrice).toFixed(2)}x` : ""}
+        </span>
+      </button>
+      <button
+        type="button"
+        disabled={downPrice == null}
+        onClick={() => onSide("DOWN")}
+        className="min-h-14 rounded-xl bg-[#e11d48] py-3 text-white shadow-inner active:bg-[#be123c] disabled:opacity-40"
+      >
+        <span className="block text-lg font-semibold">
+          {t.downWord} {downPrice == null ? "—" : cents(downPrice)}
+        </span>
+        <span className="font-mono text-xs text-rose-100/80">
+          {downPrice && downPrice > 0 ? `${(1 / downPrice).toFixed(2)}x` : ""}
+        </span>
+      </button>
+    </div>
+  );
+
+  if (variant === "dock") {
+    return (
+      <section className="gold-card rounded-b-none border-x-0 border-b-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-16px_40px_rgba(0,0,0,0.55)]">
+        <div className="mb-2 flex items-center gap-2 text-[12px]">
+          <div className="flex rounded-full bg-black/40 p-0.5">
+            {(["BTC", "SOL"] as const).map((a) => (
+              <button
+                key={a}
+                type="button"
+                className={`rounded-full px-2 py-0.5 ${asset === a ? "bg-[#e8c547] text-black" : "text-[#8b93a7]"}`}
+                onClick={() => onAsset(a)}
+              >
+                {a}
+              </button>
+            ))}
+          </div>
+          <span className="rounded bg-white/10 px-1.5 font-mono text-[#d5dbe8]">{market ? `${mm}:${ss}` : "--:--"}</span>
+          <span className="ml-auto truncate font-mono text-[#d5dbe8]">
+            {spot != null ? px(asset, spot) : "—"}
+            {delta != null && (
+              <span className={delta >= 0 ? "text-emerald-300" : "text-rose-300"}>
+                {" "}
+                {delta >= 0 ? "▲" : "▼"}
+                {px(asset, Math.abs(delta))}
+              </span>
+            )}
+          </span>
+        </div>
+        {buttons}
+        {notice && <p className="mt-1 truncate text-center text-[11px] text-[#f3d78a]">{notice}</p>}
+        {onForce && (
+          <button type="button" className="mt-1 w-full py-1 text-center text-xs text-[#e8c547] underline" onClick={onForce}>
+            {t.journalAnyway}
+          </button>
+        )}
+      </section>
+    );
+  }
 
   return (
     <section className="gold-card px-3 py-3 sm:px-4">
@@ -138,34 +210,7 @@ export function Ticket({
         </svg>
       )}
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          disabled={upPrice == null}
-          onClick={() => onSide("UP")}
-          className="rounded-xl bg-[#1f8f5f] py-3 text-white shadow-inner transition hover:bg-[#26a56d] disabled:opacity-40"
-        >
-          <span className="block text-lg font-semibold">
-            {t.upWord} {upPrice == null ? "—" : cents(upPrice)}
-          </span>
-          <span className="font-mono text-xs text-emerald-100/80">
-            {upPrice && upPrice > 0 ? `${(1 / upPrice).toFixed(2)}x` : ""}
-          </span>
-        </button>
-        <button
-          type="button"
-          disabled={downPrice == null}
-          onClick={() => onSide("DOWN")}
-          className="rounded-xl bg-[#e11d48] py-3 text-white shadow-inner transition hover:bg-[#f43f5e] disabled:opacity-40"
-        >
-          <span className="block text-lg font-semibold">
-            {t.downWord} {downPrice == null ? "—" : cents(downPrice)}
-          </span>
-          <span className="font-mono text-xs text-rose-100/80">
-            {downPrice && downPrice > 0 ? `${(1 / downPrice).toFixed(2)}x` : ""}
-          </span>
-        </button>
-      </div>
+      <div className="mt-3">{buttons}</div>
       {notice && <p className="mt-2 text-center text-xs text-[#f3d78a]">{notice}</p>}
       {onForce && (
         <button type="button" className="mt-2 w-full text-center text-xs text-[#e8c547] underline" onClick={onForce}>

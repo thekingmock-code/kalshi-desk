@@ -289,7 +289,7 @@ export function SignalsDesk() {
 
   return (
     <div className="desk-bg min-h-dvh text-[#e8edf5]">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-3 py-3 sm:px-4 sm:py-5">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-3 px-3 py-3 pb-52 sm:px-4 sm:py-5 xl:pb-5">
         <header className="flex items-center gap-3">
           <div className="flex items-end gap-2">
             <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden>
@@ -348,19 +348,21 @@ export function SignalsDesk() {
                 strength={view.strength}
               />
               {snap && (
-                <Ticket
-                  snap={{ ...snap, flow: snap.flow ?? EMPTY_FLOW }}
-                  t={t}
-                  asset={asset}
-                  onAsset={setAsset}
-                  upPrice={view.up}
-                  downPrice={view.down}
-                  spot={view.spot}
-                  strike={view.strike}
-                  onSide={(side) => journalSide(side, false)}
-                  onForce={pendingSide ? () => journalSide(pendingSide, true) : null}
-                  notice={[notice, exitNote].filter(Boolean).join(" · ") || null}
-                />
+                <div className="hidden xl:block">
+                  <Ticket
+                    snap={{ ...snap, flow: snap.flow ?? EMPTY_FLOW }}
+                    t={t}
+                    asset={asset}
+                    onAsset={setAsset}
+                    upPrice={view.up}
+                    downPrice={view.down}
+                    spot={view.spot}
+                    strike={view.strike}
+                    onSide={(side) => journalSide(side, false)}
+                    onForce={pendingSide ? () => journalSide(pendingSide, true) : null}
+                    notice={[notice, exitNote].filter(Boolean).join(" · ") || null}
+                  />
+                </div>
               )}
             </div>
             <StrategyLab
@@ -380,6 +382,24 @@ export function SignalsDesk() {
         )}
         {snap?.warning && <p className="text-center text-[11px] text-amber-200/80">{snap.warning}</p>}
       </div>
+      {snap && (
+        <div className="fixed inset-x-0 bottom-0 z-40 xl:hidden">
+          <Ticket
+            variant="dock"
+            snap={{ ...snap, flow: snap.flow ?? EMPTY_FLOW }}
+            t={t}
+            asset={asset}
+            onAsset={setAsset}
+            upPrice={view.up}
+            downPrice={view.down}
+            spot={view.spot}
+            strike={view.strike}
+            onSide={(side) => journalSide(side, false)}
+            onForce={pendingSide ? () => journalSide(pendingSide, true) : null}
+            notice={[notice, exitNote].filter(Boolean).join(" · ") || null}
+          />
+        </div>
+      )}
 
       <Sheet open={menu} onOpenChange={setMenu}>
         <SheetContent side="right" className="border-[#e8c547]/30 bg-[#0c1018] text-[#e8edf5]">

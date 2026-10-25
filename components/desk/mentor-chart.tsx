@@ -128,8 +128,17 @@ export function MentorChart({
           tickMarkFormatter: (time: Time) => formatEt(time),
         },
         crosshair: { mode: lc.CrosshairMode.Normal },
-        handleScroll: true,
-        handleScale: true,
+        handleScroll: {
+          mouseWheel: true,
+          pressedMouseMove: true,
+          horzTouchDrag: true,
+          vertTouchDrag: false,
+        },
+        handleScale: {
+          mouseWheel: true,
+          pinch: true,
+          axisPressedMouseMove: true,
+        },
       });
       const candles = chart.addSeries(lc.CandlestickSeries, {
         upColor: "#3ddc97",
