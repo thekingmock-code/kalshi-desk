@@ -1058,23 +1058,90 @@ document.getElementById("clear").onclick = () => {
   }, 2600);
 };
 
+let pollTimer = null;
+let wsConnected = false;
+
+function showUnreachable() {
+  if (last) return;
+  const trade = document.getElementById("trade");
+  if (!trade) return;
+  trade.replaceChildren();
+  const h = document.createElement("h2");
+  h.textContent = "CURRENT TRADE";
+  const p = document.createElement("p");
+  p.className = "muted";
+  p.id = "trade-status-msg";
+  p.textContent = "Desk unreachable — retrying…";
+  trade.append(h, p);
+}
+
+function startPoll() {
+  if (pollTimer) return;
+  pollTimer = setInterval(() => {
+    fetch("/api/state")
+      .then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
+      .then(render)
+      .catch(showUnreachable);
+  }, 1000);
+}
+
+function stopPoll() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function pullState() {
+  return fetch("/api/state")
+    .then((r) => {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    })
+    .then(render);
+}
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(proto + "://" + location.host + "/ws");
+  let ws;
+  try {
+    ws = new WebSocket(proto + "://" + location.host + "/ws");
+  } catch (err) {
+    startPoll();
+    setTimeout(connect, 3000);
+    return;
+  }
   const dot = document.getElementById("dot");
-  ws.onopen = () => dot.classList.add("on");
+  ws.onopen = () => {
+    wsConnected = true;
+    dot.classList.add("on");
+    stopPoll();
+  };
   ws.onmessage = (ev) => {
     try { render(JSON.parse(ev.data)); } catch (err) { /* ignore a bad frame */ }
   };
-  ws.onclose = () => {
+  ws.onerror = () => {
+    wsConnected = false;
     dot.classList.remove("on");
-    setTimeout(connect, 1000);
+    startPoll();
+  };
+  ws.onclose = () => {
+    wsConnected = false;
+    dot.classList.remove("on");
+    startPoll();
+    setTimeout(connect, 3000);
   };
 }
 
-fetch("/api/state").then((r) => r.json()).then(render).catch(() => {
-  document.querySelector("#trade p").textContent = "Desk unreachable. Retrying.";
-}).finally(connect);
+pullState().catch(showUnreachable).finally(() => {
+  connect();
+  setTimeout(() => {
+    if (!wsConnected) startPoll();
+  }, 2000);
+});
 </script>
 </body>
 </html>
