@@ -266,7 +266,7 @@ class Desk:
                     "kind": spec["kind"],
                     "log_only": bool(spec.get("log_only")),
                     "params": params,
-                    "sliders": slider_defs(sid, asset_name),
+                    "sliders": slider_defs(sid, "BTC"),
                 }
             )
         return {
