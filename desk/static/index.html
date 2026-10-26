@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>XVANTAGE // 15m</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #07090e;
+    --card: #10151c;
+    --ink: #e7e1d1;
+    --muted: #9a917c;
+    --line: #2c2618;
+    --gold: #e8c547;
+    --green: #3ddc97;
+    --red: #ff5d73;
+    --blue: #7db7ff;
+  }
+  [data-theme="light"] {
+    color-scheme: light;
+    --bg: #f6f3ea;
+    --card: #fffdf8;
+    --ink: #1c1914;
+    --muted: #6d6556;
+    --line: #e4dcc6;
+    --gold: #8a6d12;
+    --green: #0c7a48;
+    --red: #c4233c;
+    --blue: #1d4f92;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.4;
+    padding: env(safe-area-inset-top) 12px calc(20px + env(safe-area-inset-bottom));
+    display: flex;
+    justify-content: center;
+  }
+  .page { width: min(520px, 100%); }
+  .top { background: var(--bg); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; }
+  .brand { font-weight: 800; letter-spacing: 0.08em; color: var(--gold); white-space: nowrap; margin-right: auto; }
+  .brand span { color: var(--ink); font-weight: 600; }
+  #clock { flex: 1 0 100%; margin: 0; color: var(--muted); font-size: 12px; }
+  button, input { font: inherit; color: inherit; }
+  .ghost, .danger {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--gold);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+  .note {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    border-radius: 8px;
+    font-size: 12px;
+  }
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--bg);
+    padding: 6px 0;
+  }
+  .tab {
+    text-align: left;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px;
+    min-height: 72px;
+  }
+  .tab.on { border-color: var(--gold); }
+  .tab b { display: block; letter-spacing: 0.06em; }
+  .tab small { display: block; color: var(--muted); font-size: 11px; }
+  .tab small.profit { color: var(--green); }
+  .tab small.loss { color: var(--red); }
+  .tab small.wait { color: var(--gold); }
+  section {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px;
+    margin-top: 10px;
+  }
+  section.profit { border-color: var(--green); }
+  section.loss { border-color: var(--red); }
+  section.wait { border-color: var(--gold); }
+  section.reverse { border-color: var(--blue); }
+  h2 {
+    margin: 0 0 8px;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    color: var(--gold);
+    font-weight: 700;
+  }
+  .row { display: flex; justify-content: space-between; gap: 8px; margin: 3px 0; }
+  .row span:last-child { text-align: right; }
+  .muted { color: var(--muted); }
+  .profit { color: var(--green); }
+  .loss { color: var(--red); }
+  .wait { color: var(--gold); }
+  .reverse { color: var(--blue); }
+  .banner {
+    margin-top: 8px;
+    text-align: center;
+    font-weight: 800;
+    letter-spacing: 0.16em;
+    padding: 8px;
+    border-radius: 8px;
+    background: #00000022;
+  }
+  .suggest {
+    font-size: clamp(42px, 16vw, 76px);
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 0.95;
+    margin: 0;
+  }
+  ul { margin: 8px 0 0; padding-left: 18px; }
+  .meter { height: 10px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 8px 0; }
+  .meter > span { display: block; height: 100%; width: 0; background: var(--gold); }
+  .meter.real > span { background: var(--green); }
+  .meter.flip > span { background: var(--red); }
+  .part { display: grid; grid-template-columns: 1fr auto; gap: 8px; font-size: 12px; margin: 4px 0; }
+  .stabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px; }
+  .stab {
+    flex: 0 0 auto;
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+  .stab.on { border-color: var(--gold); color: var(--gold); }
+  .slider { display: block; margin: 8px 0; }
+  .slider-top { display: flex; justify-content: space-between; font-size: 12px; }
+  input[type="range"] { width: 100%; accent-color: var(--gold); height: 28px; }
+  .sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .side h3 { margin: 0 0 6px; font-size: 12px; }
+  .check { font-size: 11px; padding: 4px 0; border-top: 1px solid var(--line); }
+  .check b { font-weight: 700; }
+  .pass b { color: var(--green); }
+  .fail b { color: var(--red); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font-size: 12px; margin-bottom: 8px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .foot { color: var(--muted); font-size: 11px; margin: 12px 4px; }
+  .live { width: 8px; height: 8px; border-radius: 99px; background: var(--muted); display: inline-block; }
+  .live.on { background: var(--green); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <header>
+      <div class="brand">XVANTAGE <span>15m</span></div>
+      <span id="dot" class="live"></span>
+      <div id="clock">—</div>
+      <button id="theme" class="ghost" type="button">Light</button>
+    </header>
+    <p id="note" class="note" hidden></p>
+  </div>
+  <nav id="tabs" class="tabs"></nav>
+  <main id="main">
+    <section id="trade"><h2>CURRENT TRADE</h2><p class="muted">Connecting…</p></section>
+    <section id="suggestion"><h2>SUGGESTION</h2><p class="suggest wait">WAIT</p></section>
+    <section id="chop"><h2>CHOP VS REAL</h2></section>
+    <section id="strategy">
+      <h2>STRATEGY</h2>
+      <div id="stabs" class="stabs"></div>
+      <div id="sliders"></div>
+      <div id="exits" class="muted"></div>
+      <div id="gates" class="sides"></div>
+      <div class="actions"><button id="reset" class="ghost" type="button">Reset thresholds</button></div>
+    </section>
+    <section id="journal">
+      <h2>JOURNAL</h2>
+      <div id="jstats" class="stats"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time ET</th><th>Asset</th><th>Side</th><th>Entry</th><th>Exit</th>
+              <th>Qty</th><th>Net P&amp;L</th><th>Call</th><th>Mode</th><th>Chop</th>
+            </tr>
+          </thead>
+          <tbody id="jbody"></tbody>
+        </table>
+      </div>
+      <div id="scans"></div>
+      <div class="actions"><button id="clear" class="danger" type="button">Clear journal</button></div>
+    </section>
+    <p class="foot">Observe only. This desk never places an order. 15-minute BTC edge after fees looks thin in public data, so read the journal before trusting a signal. Composite lead, BNB, and the chop weights are unverified.</p>
+  </main>
+</div>
+<script>
+const assetOrder = ["BTC", "BNB", "SOL"];
+let asset = localStorage.getItem("desk-asset") || "BTC";
+let last = null;
+let sliderSig = "";
+let arm = 0;
+
+const root = document.documentElement;
+function applyTheme(theme) {
+  root.dataset.theme = theme;
+  localStorage.setItem("desk-theme", theme);
+  document.getElementById("theme").textContent = theme === "dark" ? "Light" : "Dark";
+}
+applyTheme(localStorage.getItem("desk-theme") || "dark");
+document.getElementById("theme").onclick = () => applyTheme(root.dataset.theme === "dark" ? "light" : "dark");
+
+function cents(p) {
+  if (p == null || Number.isNaN(Number(p))) return "—";
+  return Math.round(Number(p) * 100) + "¢";
+}
+function signedMoney(n) {
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  const v = Number(n);
+  return (v > 0 ? "+" : v < 0 ? "−" : "") + "$" + Math.abs(v).toFixed(2);
+}
+function spot(n) {
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  const v = Number(n);
+  return v >= 100 ? v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : v.toFixed(4);
+}
+function lagText(n) {
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  const v = Number(n);
+  const body = Math.abs(v) >= 1 ? Math.abs(v).toFixed(2) : Math.abs(v).toFixed(4);
+  return (v > 0 ? "+" : v < 0 ? "−" : "") + "$" + body;
+}
+function left(secs) {
+  if (secs == null || Number.isNaN(Number(secs))) return "—";
+  if (Number(secs) < 0) return "rolled";
+  const s = Math.max(0, Math.floor(Number(secs)));
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+function rate(x) {
+  if (x == null) return "—";
+  return Math.round(Number(x) * 100) + "%";
+}
+function pnlClass(n) {
+  if (n == null || Number(n) === 0) return "wait";
+  return Number(n) > 0 ? "profit" : "loss";
+}
+function unit(value, kind) {
+  const n = Number(value);
+  if (kind === "percent") return Math.round(n * 100) + "%";
+  if (kind === "cents") return Math.round(n * 100) + "¢";
+  if (kind === "dollars") return "$" + n.toFixed(3);
+  if (kind === "ratio") return n.toFixed(1) + "×";
+  if (kind === "seconds") return Math.round(n) + "s";
+  return String(Math.round(n));
+}
+function line(label, value) {
+  const row = document.createElement("div");
+  row.className = "row";
+  const a = document.createElement("span");
+  a.className = "muted";
+  a.textContent = label;
+  const b = document.createElement("span");
+  b.textContent = value;
+  row.append(a, b);
+  return row;
+}
+
+function render(state) {
+  last = state;
+  if (!state || !state.assets) return;
+  if (!state.assets[asset]) asset = (state.asset_order || assetOrder)[0];
+  document.getElementById("clock").textContent = state.et || "";
+  const note = document.getElementById("note");
+  note.hidden = !state.auth_note;
+  note.textContent = state.auth_note || "";
+  renderTabs(state);
+  const view = state.assets[asset];
+  renderTrade(view);
+  renderSuggestion(view);
+  renderChop(view);
+  renderStrategy(state, view);
+  renderJournal(state);
+}
+
+function renderTabs(state) {
+  const nav = document.getElementById("tabs");
+  nav.replaceChildren();
+  for (const name of state.asset_order || assetOrder) {
+    const view = state.assets[name];
+    const tab = view.tab || {};
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "tab" + (name === asset ? " on" : "");
+    const title = document.createElement("b");
+    title.textContent = name;
+    const px = document.createElement("small");
+    px.textContent = cents(tab.up) + " / " + cents(tab.down);
+    const time = document.createElement("small");
+    time.textContent = left(tab.secs_left) + " left";
+    const pos = document.createElement("small");
+    if (tab.position && tab.position !== "FLAT") {
+      pos.textContent = "IN " + tab.position + " " + signedMoney(tab.pnl);
+      pos.className = pnlClass(tab.pnl);
+    } else {
+      pos.textContent = "FLAT";
+      pos.className = "wait";
+    }
+    btn.append(title, px, time, pos);
+    btn.onclick = () => {
+      asset = name;
+      localStorage.setItem("desk-asset", name);
+      if (last) render(last);
+    };
+    nav.appendChild(btn);
+  }
+}
+
+function renderTrade(view) {
+  const box = document.getElementById("trade");
+  const trade = view.trade || {};
+  const m = view.market || {};
+  const bot = view.bot || {};
+  box.className = trade.flat ? "wait" : pnlClass(trade.pnl);
+  box.replaceChildren();
+  const h = document.createElement("h2");
+  h.textContent = "CURRENT TRADE";
+  box.appendChild(h);
+  const between = m.expired || (trade.secs_left != null && trade.secs_left < 0);
+  box.appendChild(line("Market", between ? "Between rounds" : (m.ticker || "no open 15m market")));
+  box.appendChild(line("Strike", m.strike == null ? "—" : spot(m.strike)));
+  box.appendChild(line("UP bid / ask", cents(m.yes_bid) + " / " + cents(m.yes_ask)));
+  box.appendChild(line("DOWN bid / ask", cents(m.no_bid) + " / " + cents(m.no_ask)));
+  const ages = bot.feed_ages || {};
+  const fresh = (bot.feeds || []).join(" + ") || "no fresh feed";
+  const stale = Object.keys(ages).filter((name) => !(bot.feeds || []).includes(name));
+  const staleNote = stale.map((name) => name + " " + Number(ages[name]).toFixed(0) + "s old").join(", ");
+  box.appendChild(line("Composite", spot(bot.composite) + " · " + fresh + (bot.single_feed ? " · single feed" : "") + (staleNote ? " · " + staleNote : "")));
+  box.appendChild(line("Kalshi index", spot(bot.index)));
+  box.appendChild(line("Lag", lagText(bot.lag)));
+  const mom = bot.momentum == null ? "unknown" : bot.momentum > 0 ? "up" : bot.momentum < 0 ? "down" : "flat";
+  box.appendChild(line("1m move", bot.move_1m == null ? "—" : "$" + Number(bot.move_1m).toFixed(2)));
+  box.appendChild(line("Vol vs baseline", bot.vol_ratio == null ? "—" : Number(bot.vol_ratio).toFixed(2) + "×"));
+  box.appendChild(line("Taker buy", bot.buy_pct == null ? "—" : Math.round(bot.buy_pct) + "%"));
+  box.appendChild(line("Momentum", mom));
+  box.appendChild(line("P(up)", bot.p_up == null ? "—" : Math.round(bot.p_up * 100) + "%"));
+  const banner = document.createElement("div");
+  banner.className = "banner";
+  if (trade.flat) {
+    banner.textContent = "FLAT";
+    banner.classList.add("wait");
+  } else if (trade.right == null) {
+    banner.textContent = trade.side === "YES" ? "IN UP" : "IN DOWN";
+    banner.classList.add("wait");
+  } else if (trade.right) {
+    banner.textContent = (trade.side === "YES" ? "UP · YES" : "DOWN · NO") + " · RIGHT";
+    banner.classList.add("profit");
+  } else {
+    banner.textContent = (trade.side === "YES" ? "UP · YES" : "DOWN · NO") + " · WRONG";
+    banner.classList.add("loss");
+  }
+  box.appendChild(banner);
+  if (!trade.flat) {
+    box.appendChild(line("Side", trade.side === "YES" ? "YES · UP" : "NO · DOWN"));
+    box.appendChild(line("Entry", cents(trade.entry)));
+    box.appendChild(line("Contracts", trade.contracts == null ? "—" : String(trade.contracts)));
+    box.appendChild(line("Cost", trade.cost == null ? "—" : "$" + Number(trade.cost).toFixed(2)));
+    box.appendChild(line("Value", trade.value == null ? "—" : "$" + Number(trade.value).toFixed(2)));
+    const pnl = line("P&L", signedMoney(trade.pnl));
+    pnl.lastChild.className = pnlClass(trade.pnl);
+    box.appendChild(pnl);
+  }
+  const cmp = document.createElement("div");
+  cmp.className = "row";
+  const leftL = document.createElement("span");
+  leftL.textContent = left(trade.secs_left) + " left";
+  const lagL = document.createElement("span");
+  lagL.textContent = "lag " + lagText(trade.lag);
+  const age = document.createElement("span");
+  age.className = "muted";
+  age.textContent = bot.composite_age == null ? "composite —" : "composite " + Number(bot.composite_age).toFixed(1) + "s";
+  cmp.append(leftL, lagL, age);
+  box.appendChild(cmp);
+}
+
+function renderSuggestion(view) {
+  const box = document.getElementById("suggestion");
+  const sug = view.suggestion || { action: "WAIT", tone: "wait", reasons: [] };
+  box.className = sug.tone || "wait";
+  box.replaceChildren();
+  const h = document.createElement("h2");
+  h.textContent = "SUGGESTION";
+  const word = document.createElement("p");
+  word.className = "suggest " + (sug.tone || "wait");
+  word.textContent = sug.action || "WAIT";
+  const list = document.createElement("ul");
+  for (const reason of sug.reasons || []) {
+    const li = document.createElement("li");
+    li.textContent = reason;
+    list.appendChild(li);
+  }
+  box.append(h, word, list);
+}
+
+function renderChop(view) {
+  const box = document.getElementById("chop");
+  const chop = view.chop || { score: 0, label: "COIN FLIP", parts: [] };
+  box.replaceChildren();
+  const h = document.createElement("h2");
+  h.textContent = "CHOP VS REAL";
+  const head = document.createElement("div");
+  head.className = "row";
+  const score = document.createElement("b");
+  score.textContent = Number(chop.score).toFixed(0);
+  const label = document.createElement("span");
+  const kind = chop.label === "REAL MOVE" ? "profit" : chop.label === "COIN FLIP" ? "loss" : "wait";
+  label.className = kind;
+  label.textContent = chop.label;
+  head.append(score, label);
+  const meter = document.createElement("div");
+  meter.className = "meter " + (chop.label === "REAL MOVE" ? "real" : chop.label === "COIN FLIP" ? "flip" : "");
+  const fill = document.createElement("span");
+  fill.style.width = Math.max(0, Math.min(100, Number(chop.score))) + "%";
+  meter.appendChild(fill);
+  box.append(h, head, meter);
+  for (const part of chop.parts || []) {
+    const row = document.createElement("div");
+    row.className = "part";
+    const name = document.createElement("span");
+    name.textContent = part.name;
+    const pts = document.createElement("span");
+    pts.className = "muted";
+    pts.textContent = part.points + " / " + part.max;
+    row.append(name, pts);
+    box.appendChild(row);
+  }
+}
+
+function renderStrategy(state, view) {
+  const tabs = document.getElementById("stabs");
+  tabs.replaceChildren();
+  for (const spec of state.strategies || []) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "stab" + (spec.id === state.active ? " on" : "");
+    btn.textContent = spec.label;
+    btn.onclick = () => postJSON("/api/settings", { active: spec.id });
+    tabs.appendChild(btn);
+  }
+  const spec = (state.strategies || []).find((s) => s.id === state.active);
+  if (!spec) return;
+  const sig = state.active + ":" + JSON.stringify(spec.params);
+  const focused = document.activeElement && document.activeElement.closest("#sliders");
+  if (sig !== sliderSig && !focused) {
+    sliderSig = sig;
+    buildSliders(spec);
+  }
+  const exits = document.getElementById("exits");
+  exits.replaceChildren();
+  const rules = state.rules || {};
+  const bits = [
+    "Hard stop " + Math.round((rules.exit_loss_frac || 0) * 100) + "% of cost",
+    "Bank at " + cents(rules.bank_price) + " with more than " + rules.bank_secs_left + "s left",
+    "Entry grace " + rules.entry_grace_secs + "s",
+    "Reverse if the other side is " + Math.round((rules.reverse_prob || 0) * 100) + "%+, at least " + rules.reverse_secs_left + "s left, price at or under " + cents(rules.reverse_price_max),
+    "Exit a wrong side under " + Math.round((rules.recover_prob || 0) * 100) + "% recover",
+    "Take profit on a right side under " + Math.round((rules.thin_prob || 0) * 100) + "%"
+  ];
+  if (spec.kind === "gates") {
+    bits.push("Trail " + unit(spec.params.trail_retrace, "percent") + " off the high");
+    bits.push("Breakeven after +" + unit(spec.params.breakeven_after, "cents"));
+  } else if (spec.kind === "arb") {
+    bits.push("Escape at " + unit(spec.params.escape_price, "cents") + " · hard cap " + unit(spec.params.hard_cap, "cents"));
+    bits.push("Reversal guard exits a wrong-side arb");
+  } else if (spec.kind === "hour") {
+    bits.push("Stop if the bid is " + unit(spec.params.stop_price, "cents") + " or lower");
+    bits.push("One entry per UTC hour");
+  } else if (spec.log_only) {
+    bits.push("Log only. No entry.");
+  }
+  for (const bit of bits) {
+    const p = document.createElement("div");
+    p.textContent = bit;
+    exits.appendChild(p);
+  }
+  const gates = document.getElementById("gates");
+  gates.replaceChildren();
+  for (const side of ["UP", "DOWN"]) {
+    const col = document.createElement("div");
+    col.className = "side";
+    const h = document.createElement("h3");
+    h.textContent = side === "UP" ? "UP · YES" : "DOWN · NO";
+    col.appendChild(h);
+    for (const check of (view.gates && view.gates[side]) || []) {
+      const row = document.createElement("div");
+      row.className = "check " + (check.ok ? "pass" : "fail");
+      const name = document.createElement("b");
+      name.textContent = (check.ok ? "PASS " : "FAIL ") + check.label;
+      const detail = document.createElement("div");
+      detail.className = "muted";
+      detail.textContent = check.detail || "";
+      row.append(name, detail);
+      col.appendChild(row);
+    }
+    gates.appendChild(col);
+  }
+}
+
+function buildSliders(spec) {
+  const root = document.getElementById("sliders");
+  root.replaceChildren();
+  for (const sl of spec.sliders || []) {
+    const wrap = document.createElement("label");
+    wrap.className = "slider";
+    const top = document.createElement("div");
+    top.className = "slider-top";
+    const name = document.createElement("span");
+    name.textContent = sl.label;
+    const val = document.createElement("b");
+    val.textContent = unit(spec.params[sl.key], sl.unit);
+    top.append(name, val);
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = sl.min;
+    input.max = sl.max;
+    input.step = sl.step;
+    input.value = spec.params[sl.key];
+    input.addEventListener("input", () => {
+      val.textContent = unit(Number(input.value), sl.unit);
+      clearTimeout(input._t);
+      input._t = setTimeout(() => {
+        postJSON("/api/settings", { strategy: spec.id, key: sl.key, value: Number(input.value) });
+      }, 220);
+    });
+    wrap.append(top, input);
+    root.appendChild(wrap);
+  }
+}
+
+function renderJournal(state) {
+  const stats = (state.journal && state.journal.stats) || {};
+  const box = document.getElementById("jstats");
+  box.replaceChildren();
+  const items = [
+    ["Trades", stats.trades ?? 0],
+    ["Win rate", rate(stats.win_rate)],
+    ["Net P&L", signedMoney(stats.net_pnl || 0)],
+    ["Win rate chop ≥ 70", rate(stats.win_rate_chop_70) + " (" + (stats.chop_70_n || 0) + ")"],
+    ["Win rate chop < 40", rate(stats.win_rate_chop_40) + " (" + (stats.chop_40_n || 0) + ")"]
+  ];
+  for (const [k, v] of items) {
+    const cell = document.createElement("div");
+    const a = document.createElement("div");
+    a.className = "muted";
+    a.textContent = k;
+    const b = document.createElement("div");
+    b.textContent = String(v);
+    if (k === "Net P&L") b.className = pnlClass(stats.net_pnl || 0);
+    cell.append(a, b);
+    box.appendChild(cell);
+  }
+  const body = document.getElementById("jbody");
+  body.replaceChildren();
+  const rows = (state.journal && state.journal.rows) || [];
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = 10;
+    td.className = "muted";
+    td.textContent = "No closed trades yet. This desk only watches.";
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    const call = row.right == null ? "—" : row.right ? "RIGHT" : "WRONG";
+    const cells = [
+      row.et || "—",
+      row.asset || "—",
+      row.side || "—",
+      cents(row.entry),
+      cents(row.exit_px),
+      row.contracts == null ? "—" : String(row.contracts),
+      signedMoney(row.net_pnl),
+      call,
+      row.mode || "—",
+      row.chop == null ? "—" : Number(row.chop).toFixed(0)
+    ];
+    cells.forEach((text, i) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (i === 6) td.className = pnlClass(row.net_pnl);
+      if (i === 7) td.className = row.right == null ? "wait" : row.right ? "profit" : "loss";
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  }
+  const scans = document.getElementById("scans");
+  scans.replaceChildren();
+  if (state.scanner && state.scanner.length) {
+    const h = document.createElement("h2");
+    h.textContent = "SUB-25¢ LOG";
+    h.style.marginTop = "12px";
+    scans.appendChild(h);
+    for (const row of state.scanner.slice(0, 8)) {
+      const p = document.createElement("div");
+      p.className = "muted";
+      p.textContent = (row.et || "") + "  " + row.asset + " " + row.side + "  " + cents(row.ask) + "  edge " + signedMoney(row.edge);
+      scans.appendChild(p);
+    }
+  }
+}
+
+async function postJSON(url, body) {
+  await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
+document.getElementById("reset").onclick = () => {
+  sliderSig = "";
+  postJSON("/api/settings/reset", {});
+};
+document.getElementById("clear").onclick = () => {
+  const now = Date.now();
+  const btn = document.getElementById("clear");
+  if (arm && now - arm < 2500) {
+    arm = 0;
+    btn.textContent = "Clear journal";
+    postJSON("/api/journal/clear", {});
+    return;
+  }
+  arm = now;
+  btn.textContent = "Tap again to clear";
+  setTimeout(() => {
+    if (arm && Date.now() - arm >= 2400) {
+      arm = 0;
+      btn.textContent = "Clear journal";
+    }
+  }, 2600);
+};
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(proto + "://" + location.host + "/ws");
+  const dot = document.getElementById("dot");
+  ws.onopen = () => dot.classList.add("on");
+  ws.onmessage = (ev) => {
+    try { render(JSON.parse(ev.data)); } catch (err) { /* ignore a bad frame */ }
+  };
+  ws.onclose = () => {
+    dot.classList.remove("on");
+    setTimeout(connect, 1000);
+  };
+}
+
+fetch("/api/state").then((r) => r.json()).then(render).catch(() => {
+  document.querySelector("#trade p").textContent = "Desk unreachable. Retrying.";
+}).finally(connect);
+</script>
+</body>
+</html>
