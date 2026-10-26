@@ -315,7 +315,6 @@ function render(state) {
   note.hidden = !state.auth_note;
   note.textContent = state.auth_note || "";
   renderTabs(state);
-  const foot = document.getElementById("foot");
   const view = state.assets[asset];
   renderTrade(view);
   renderGauge(view);
