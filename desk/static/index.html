@@ -98,6 +98,7 @@
   section.loss { border-color: var(--red); }
   section.wait { border-color: var(--gold); }
   section.reverse { border-color: var(--blue); }
+  section.in-trade { box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 40%, transparent); }
   h2 {
     margin: 0 0 8px;
     font-size: 11px;
@@ -364,7 +365,7 @@ function render(state) {
   note.textContent = state.auth_note || "";
   renderTabs(state);
   const view = state.assets[asset];
-  renderTrade(view);
+  renderTrade(view, state);
   renderGauge(view);
   renderMiniChart(view);
   renderSuggestion(view);
@@ -556,39 +557,85 @@ function tradeVerdict(trade) {
     : { text: "WRONG SIDE", cls: "loss" };
 }
 
-function renderTrade(view) {
+function openTradeAsset(state, except) {
+  for (const name of state.asset_order || assetOrder) {
+    if (except && name === except) continue;
+    const t = state.assets[name]?.trade;
+    if (t && !t.flat) return name;
+  }
+  return null;
+}
+
+function marketUpNow(trade, bot, m) {
+  if (trade.market_up != null) return trade.market_up;
+  const ref = bot.ref ?? trade.settle_ref ?? bot.composite;
+  const strike = m.strike ?? trade.strike;
+  if (ref == null || strike == null) return null;
+  return ref >= strike;
+}
+
+function renderTrade(view, state) {
   const box = document.getElementById("trade");
   const trade = view.trade || {};
   const m = view.market || {};
   const bot = view.bot || {};
-  box.className = trade.flat ? "wait" : pnlClass(trade.pnl);
+  const inTrade = !trade.flat;
+  box.className = inTrade ? pnlClass(trade.pnl) : "wait";
+  if (inTrade) box.classList.add("in-trade");
   box.replaceChildren();
   const h = document.createElement("h2");
   h.textContent = "CURRENT TRADE";
   box.appendChild(h);
+
+  const other = state ? openTradeAsset(state, asset) : null;
+  if (other) {
+    const jump = document.createElement("button");
+    jump.type = "button";
+    jump.className = "banner wait";
+    jump.style.width = "100%";
+    jump.style.cursor = "pointer";
+    jump.textContent = "Open position on " + other + " — tap to view";
+    jump.onclick = () => {
+      asset = other;
+      localStorage.setItem("desk-asset", other);
+      if (last) render(last);
+    };
+    box.appendChild(jump);
+  }
+
   const between = m.expired || (trade.secs_left != null && trade.secs_left < 0);
   const verdict = tradeVerdict(trade);
 
-  if (!trade.flat) {
-    const status = document.createElement("div");
-    status.className = "trade-status";
-    const mode = document.createElement("div");
+  const status = document.createElement("div");
+  status.className = "trade-status";
+  const mode = document.createElement("div");
+  if (inTrade) {
     mode.textContent = (trade.mode || "live").toUpperCase();
     mode.className = trade.mode === "paper" ? "wait" : "profit";
-    const dir = document.createElement("div");
+  } else {
+    mode.textContent = between ? "BETWEEN" : "FLAT";
+    mode.className = "wait";
+  }
+  const dir = document.createElement("div");
+  if (inTrade) {
     dir.textContent = (trade.direction || "—") + " · " + (trade.side || "—");
     dir.className = trade.direction === "UP" ? "profit" : "loss";
-    const v = document.createElement("div");
-    v.textContent = verdict.text;
-    v.className = verdict.cls;
-    status.append(mode, dir, v);
-    box.appendChild(status);
+  } else {
+    dir.textContent = "NO POSITION";
+    dir.className = "muted";
+  }
+  const v = document.createElement("div");
+  v.textContent = inTrade ? verdict.text : "—";
+  v.className = inTrade ? verdict.cls : "wait";
+  status.append(mode, dir, v);
+  box.appendChild(status);
 
-    const pos = document.createElement("div");
-    pos.className = "trade-block";
-    const ph = document.createElement("h3");
-    ph.textContent = "POSITION";
-    pos.appendChild(ph);
+  const pos = document.createElement("div");
+  pos.className = "trade-block";
+  const ph = document.createElement("h3");
+  ph.textContent = "POSITION";
+  pos.appendChild(ph);
+  if (inTrade) {
     pos.appendChild(line("Ticker", trade.ticker || m.ticker || "—"));
     pos.appendChild(line("Held", dur(trade.held_for) + " · " + left(trade.secs_left) + " on market"));
     pos.appendChild(line("Entry", cents(trade.entry) + " · " + (trade.contracts ?? "—") + " ct"));
@@ -603,30 +650,50 @@ function renderTrade(view) {
     if (trade.paper) {
       pos.appendChild(line("Paper fills", (trade.paper_entries_used ?? 0) + "/" + (trade.paper_entries_max ?? 1) + " this market"));
     }
-    box.appendChild(pos);
+  } else {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.style.margin = "0";
+    empty.style.fontSize = "11px";
+    empty.textContent = between
+      ? "Between 15m rounds — no position on this market."
+      : "No open paper or live position — fills show entry, mark P&L, and exit levels here.";
+    pos.appendChild(empty);
+    if (view.paper_entry?.enabled) {
+      pos.appendChild(line("Paper slots", (trade.paper_entries_used ?? 0) + "/" + (trade.paper_entries_max ?? 1) + " used this market"));
+    }
+  }
+  box.appendChild(pos);
 
-    const settle = document.createElement("div");
-    settle.className = "trade-block";
-    const sh = document.createElement("h3");
-    sh.textContent = "VS STRIKE (settle proxy)";
-    settle.appendChild(sh);
-    settle.appendChild(line("Strike", trade.strike == null ? "—" : spot(trade.strike)));
-    settle.appendChild(line("Composite", spot(trade.composite ?? bot.composite)));
-    settle.appendChild(line("Settle ref", spot(trade.settle_ref ?? bot.ref)));
-    settle.appendChild(line("Gap", trade.gap_vs_strike == null ? "—" : signedMoney(trade.gap_vs_strike)));
-    const mkt = trade.market_up == null ? "—" : trade.market_up ? "UP (≥ strike)" : "DOWN (< strike)";
-    settle.appendChild(line("Market now", mkt));
+  const settle = document.createElement("div");
+  settle.className = "trade-block";
+  const sh = document.createElement("h3");
+  sh.textContent = "VS STRIKE (settle proxy)";
+  settle.appendChild(sh);
+  const strike = trade.strike ?? m.strike;
+  const composite = trade.composite ?? bot.composite;
+  const ref = trade.settle_ref ?? bot.ref;
+  const gap = trade.gap_vs_strike ?? (composite != null && strike != null ? composite - strike : null);
+  const mktUp = marketUpNow(trade, bot, m);
+  settle.appendChild(line("Strike", strike == null ? "—" : spot(strike)));
+  settle.appendChild(line("Composite", spot(composite)));
+  settle.appendChild(line("Settle ref", spot(ref)));
+  settle.appendChild(line("Gap", gap == null ? "—" : signedMoney(gap)));
+  const mktLabel = mktUp == null ? "—" : mktUp ? "UP (≥ strike)" : "DOWN (< strike)";
+  settle.appendChild(line("Market now", mktLabel));
+  if (inTrade) {
     const pick = trade.direction || "—";
     const ok = trade.direction_ok;
     const align = ok == null ? "unknown" : ok ? pick + " matches market" : pick + " vs market";
     settle.appendChild(line("Your pick", align));
-    box.appendChild(settle);
+    const sideRow = line("Side check", verdict.text);
+    sideRow.lastChild.className = verdict.cls;
+    settle.appendChild(sideRow);
   } else {
-    const banner = document.createElement("div");
-    banner.className = "banner wait";
-    banner.textContent = between ? "FLAT · between rounds" : "FLAT · no open position";
-    box.appendChild(banner);
+    settle.appendChild(line("Your pick", "— (flat)"));
+    settle.appendChild(line("Side check", "RIGHT / WRONG when in a trade"));
   }
+  box.appendChild(settle);
 
   const pe = view.paper_entry;
   if (pe && pe.enabled) {
