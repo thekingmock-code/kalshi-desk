@@ -30,6 +30,7 @@ class SettingBody(BaseModel):
     key: str | None = None
     value: float | None = None
     active: str | None = None
+    asset: str | None = None
 
 
 @app.get("/")
@@ -70,7 +71,7 @@ async def stream(socket: WebSocket):
 @app.post("/api/settings")
 async def settings(body: SettingBody):
     async with desk._lock:
-        return desk.update_setting(body.active, body.strategy, body.key, body.value)
+        return desk.update_setting(body.active, body.strategy, body.key, body.value, body.asset)
 
 
 @app.post("/api/settings/reset")

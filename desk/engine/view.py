@@ -9,7 +9,9 @@ from desk.engine.chop import chop_label, chop_score
 from desk.engine.gauge import build_gauge
 from desk.engine.model import fair_up, fee_dollars
 from desk.engine.rollover import Position
+from desk.engine.gates_eval import net_edge
 from desk.engine.strategies import all_pass, gate_sides
+from desk.engine.tunable import merge_params
 from desk.engine.suggest import SuggestCtx, decide
 
 ET = ZoneInfo("America/New_York")
@@ -39,6 +41,13 @@ def build_asset(
     already_entered_hour: bool,
     paper_buys: int = 0,
     chart: dict | None = None,
+    dual_feed_ok: bool = False,
+    feed_detail: str = "",
+    composite_pct_move_3s: float | None = None,
+    kalshi_mid_move_3s: float | None = None,
+    btc_momentum: int | None = None,
+    sol_confirm_secs: float | None = None,
+    tunable_params: dict | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -71,8 +80,22 @@ def build_asset(
     def fee_one(price: float) -> float:
         return fee_dollars(1, price, rate)
 
+    params = tunable_params or merge_params(strategy.get("id", "gates_15m"), asset, strategy.get("params"))
+    strat = {**strategy, "params": params}
+    yes_spread = (
+        None
+        if market.get("yes_ask") is None or market.get("yes_bid") is None
+        else market["yes_ask"] - market["yes_bid"]
+    )
+    no_spread = (
+        None
+        if market.get("no_ask") is None or market.get("no_bid") is None
+        else market["no_ask"] - market["no_bid"]
+    )
+    edge_up = net_edge(p_up, market.get("yes_ask"), yes_spread, fee_one)
+    edge_down = net_edge(None if p_up is None else 1 - p_up, market.get("no_ask"), no_spread, fee_one)
     gates = gate_sides(
-        strategy,
+        strat,
         asset=asset,
         secs_left=secs_left,
         yes_bid=market.get("yes_bid"),
@@ -86,11 +109,18 @@ def build_asset(
         now=now,
         fee_fn=fee_one,
         already_entered_hour=already_entered_hour,
+        params=params,
+        sigma_t=sigma_t if sigma_t > 0 else None,
+        ref=ref,
+        strike=strike,
+        dual_feed_ok=dual_feed_ok,
+        feed_detail=feed_detail,
+        composite_pct_move_3s=composite_pct_move_3s,
+        kalshi_mid_move_3s=kalshi_mid_move_3s,
+        btc_momentum=btc_momentum,
+        sol_confirm_secs=sol_confirm_secs,
     )
-    edge_up = None if p_up is None or market.get("yes_ask") is None else p_up - market["yes_ask"] - fee_one(market["yes_ask"])
-    edge_down = None
-    if p_up is not None and market.get("no_ask") is not None:
-        edge_down = (1 - p_up) - market["no_ask"] - fee_one(market["no_ask"])
+    locked = [c for side in gates.values() for c in side if c.get("locked")]
     if edge_down is not None and (edge_up is None or edge_down > edge_up):
         favored, favored_edge = "DOWN", edge_down
     elif edge_up is not None:
@@ -149,6 +179,8 @@ def build_asset(
         "suggestion": {"action": action, "tone": tone, "reasons": reasons},
         "chop": {"score": round(score, 1), "label": label, "parts": parts},
         "gates": gates,
+        "locked_gates": locked,
+        "tunable_params": params,
         "gauge": build_gauge(
             composite=composite,
             strike=strike,

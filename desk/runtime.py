@@ -12,7 +12,16 @@ from pathlib import Path
 
 from kalshi_auth import load_private_key_from_env
 
+from desk.engine import locked as gate_locked
 from desk.engine.load import load_config
+from desk.engine.tunable import (
+    clamp_param,
+    default_params,
+    merge_params,
+    pending_key,
+    settings_key,
+    slider_defs,
+)
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
 from desk.engine.paper import can_paper_enter, paper_buy, side_to_yes
@@ -52,10 +61,11 @@ class AssetRT:
     market: dict = field(default_factory=dict)
     scan_at: dict = field(default_factory=dict)
     last_paper_entry: float = 0.0
-    lag_poll_since: float | None = None
-    lag_poll_side: str | None = None
     chart_ticker: str | None = None
     chart_points: deque = field(default_factory=deque)
+    mid_history: deque = field(default_factory=deque)
+    sol_confirm_side: str | None = None
+    sol_confirm_since: float | None = None
 
     def __post_init__(self) -> None:
         self.book.asset = self.name
@@ -153,32 +163,6 @@ class Desk:
                     print(f"Kalshi market {st.name}: {exc.__class__.__name__}")
             await asyncio.sleep(2)
 
-    def _lag_poll_state(self, st: AssetRT, now: float, side: str | None, lag: float | None) -> dict:
-        paper = self.cfg.get("paper") or {}
-        required = float(paper.get("lag_align_secs", 3))
-        if not side or not lag_on_right_side(side, lag):
-            st.lag_poll_side = None
-            st.lag_poll_since = None
-            return {
-                "required_secs": required,
-                "side": side,
-                "aligned": False,
-                "held_secs": 0.0,
-                "ready": False,
-            }
-        if st.lag_poll_side != side:
-            st.lag_poll_side = side
-            st.lag_poll_since = now
-        since = st.lag_poll_since if st.lag_poll_since is not None else now
-        held = max(0.0, now - since)
-        return {
-            "required_secs": required,
-            "side": side,
-            "aligned": True,
-            "held_secs": round(held, 1),
-            "ready": held >= required,
-        }
-
     async def _poll_private(self) -> None:
         assert self._creds
         key_id, private_key = self._creds
@@ -236,31 +220,11 @@ class Desk:
         return self._payload(time.time())
 
     def _payload(self, now: float) -> dict:
-        strategy = self._strategy()
+        btc_mom = self._momentum(self.assets.get("BTC"), now, self._composite(self.assets.get("BTC"), now)[0] if self.assets.get("BTC") else None) if self.assets.get("BTC") else None
         assets = {}
         for name, st in self.assets.items():
+            built = self._build_view(st, now, btc_momentum=btc_mom)
             metrics = self._metrics(st, now)
-            market = self._market_view(st)
-            built = build_asset(
-                asset=name,
-                now=now,
-                cfg=self.cfg,
-                strategy=strategy,
-                market=market,
-                composite=metrics["composite"],
-                composite_age=metrics["composite_age"],
-                feeds=metrics["feeds"],
-                index=metrics["index"],
-                move_1m=metrics["move_1m"],
-                baseline_move=metrics["baseline_move"],
-                buy_pct=metrics["buy_pct"],
-                momentum=metrics["momentum"],
-                crossings=metrics["crossings"],
-                position=st.book.position,
-                already_entered_hour=self._already_entered_hour(name, now),
-                paper_buys=self._paper_buys(st),
-                chart=self._chart_payload(st),
-            )
             built["bot"]["feed_ages"] = metrics["feed_ages"]
             built["market"]["expired"] = bool((st.market or {}).get("expired")) or (
                 built["tab"]["secs_left"] is not None and built["tab"]["secs_left"] < 0
@@ -292,8 +256,9 @@ class Desk:
         strategies = []
         saved = self.store.settings()
         for sid, spec in self.cfg["strategies"].items():
-            params = dict(spec["params"])
-            params.update(saved.get(f"params:{sid}") or {})
+            if spec.get("kind") == "hour" or sid == "hour_end":
+                continue
+            params = self._params_for(sid, "BTC", saved)
             strategies.append(
                 {
                     "id": sid,
@@ -301,7 +266,7 @@ class Desk:
                     "kind": spec["kind"],
                     "log_only": bool(spec.get("log_only")),
                     "params": params,
-                    "sliders": spec["sliders"],
+                    "sliders": slider_defs(sid, asset_name),
                 }
             )
         return {
@@ -311,7 +276,8 @@ class Desk:
             "auth_note": self.auth_note,
             "observe_only": not bool((self.cfg.get("paper") or {}).get("enabled")),
             "paper": self.cfg.get("paper") or {},
-            "active": strategy["id"],
+            "active": self._strategy("BTC")["id"],
+            "param_log": stamp_rows(self.store.param_changes()),
             "strategies": strategies,
             "asset_order": list(self.assets),
             "assets": assets,
@@ -348,6 +314,23 @@ class Desk:
                 if bid is not None:
                     pos.high_water = max(pos.high_water, bid)
             self._append_chart_point(st, now, px)
+            yes_bid, yes_ask = st.book.yes_bid, st.book.yes_ask
+            if yes_bid is not None and yes_ask is not None:
+                st.mid_history.append((now, (yes_bid + yes_ask) / 2))
+                while st.mid_history and now - st.mid_history[0][0] > 30:
+                    st.mid_history.popleft()
+            strat = self._strategy(st.name)
+            if strat.get("kind") == "sol" and st.name == "SOL":
+                view = self._build_view(st, now)
+                side = "UP" if (view["bot"].get("edge_up") or -1) >= (view["bot"].get("edge_down") or -1) else "DOWN"
+                pre = [c for c in view["gates"][side] if c["label"] != "3s entry confirm"]
+                if all(c["ok"] for c in pre):
+                    if st.sol_confirm_side != side:
+                        st.sol_confirm_side = side
+                        st.sol_confirm_since = now
+                else:
+                    st.sol_confirm_side = None
+                    st.sol_confirm_since = None
             self._run_paper(st, now)
             self._maybe_scan(st, now)
             self._maybe_shadow(st, now)
@@ -377,13 +360,12 @@ class Desk:
     def _run_paper(self, st: AssetRT, now: float) -> None:
         if not (self.cfg.get("paper") or {}).get("enabled"):
             return
-        strategy = self._strategy()
+        strategy = self._strategy(st.name)
         ticker = st.book.ticker or ""
         if not ticker:
             return
         buys = self._paper_buys(st)
         view = self._preview(st, now, strategy, buys)
-        view["_strategy"] = strategy
         pos = st.book.position
         rate = float(self.cfg["fees"]["taker_rate"])
         paper_cfg = self.cfg.get("paper") or {}
@@ -446,7 +428,7 @@ class Desk:
         st.book.position = None
 
     def _maybe_scan(self, st: AssetRT, now: float) -> None:
-        strategy = self._strategy()
+        strategy = self._strategy(st.name)
         if not strategy.get("log_only"):
             return
         view = self._preview(st, now, strategy)
@@ -461,11 +443,13 @@ class Desk:
             self.store.add_scan(st.name, side, ask, edge)
             st.scan_at[(ticker, side)] = now
 
-    def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
+    def _build_view(self, st: AssetRT, now: float, *, btc_momentum: int | None = None, paper_buys: int | None = None) -> dict:
+        strategy = self._strategy(st.name)
         metrics = self._metrics(st, now)
         if paper_buys is None:
             paper_buys = self._paper_buys(st)
-        view = build_asset(
+        sol_confirm = self._sol_confirm_secs(st, now, strategy)
+        return build_asset(
             asset=st.name,
             now=now,
             cfg=self.cfg,
@@ -484,7 +468,24 @@ class Desk:
             already_entered_hour=self._already_entered_hour(st.name, now),
             paper_buys=paper_buys,
             chart=self._chart_payload(st),
+            dual_feed_ok=metrics["dual_feed_ok"],
+            feed_detail=metrics["feed_detail"],
+            composite_pct_move_3s=metrics["composite_pct_move_3s"],
+            kalshi_mid_move_3s=metrics["kalshi_mid_move_3s"],
+            btc_momentum=btc_momentum,
+            sol_confirm_secs=sol_confirm,
+            tunable_params=metrics["tunable_params"],
         )
+
+    def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
+        del strategy
+        btc_st = self.assets.get("BTC")
+        btc_mom = None
+        if btc_st:
+            px, _, _ = self._composite(btc_st, now)
+            btc_mom = self._momentum(btc_st, now, px)
+        view = self._build_view(st, now, btc_momentum=btc_mom, paper_buys=paper_buys)
+        view["_strategy"] = self._strategy(st.name)
         return view
 
     def _apply_market(self, st: AssetRT, market: dict | None, now: float) -> None:
@@ -499,11 +500,13 @@ class Desk:
                 if st.book.position and st.book.position.paper:
                     self.store.clear_paper_open(st.name)
             self._settle_shadow(st, self._settlement_ref(st, now))
+            self._apply_pending_params(st.name)
             st.book = new_book
             st.chart_ticker = new_book.ticker
             st.chart_points.clear()
-            st.lag_poll_since = None
-            st.lag_poll_side = None
+            st.mid_history.clear()
+            st.sol_confirm_since = None
+            st.sol_confirm_side = None
             st.book.asset = st.name
         st.book.ticker = market["ticker"]
         st.book.asset = st.name
@@ -576,7 +579,7 @@ class Desk:
     def _maybe_shadow(self, st: AssetRT, now: float) -> None:
         if (self.cfg.get("paper") or {}).get("enabled"):
             return
-        strategy = self._strategy()
+        strategy = self._strategy(st.name)
         if strategy.get("log_only"):
             return
         ticker = st.book.ticker
@@ -732,7 +735,7 @@ class Desk:
                 pos.fees += fee
                 pos.contracts = total
                 return
-            preview = self._preview(st, now, self._strategy())
+            preview = self._preview(st, now, self._strategy(st.name))
             st.book.position = Position(
                 asset=st.name,
                 ticker=fill["ticker"],
@@ -813,15 +816,85 @@ class Desk:
         stamp = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H")
         return f"{asset}:{stamp}"
 
-    def _strategy(self) -> dict:
+    def _params_for(self, strategy_id: str, asset: str, saved: dict | None = None) -> dict:
+        saved = saved if saved is not None else self.store.settings()
+        return merge_params(strategy_id, asset, saved.get(settings_key(strategy_id, asset)))
+
+    def _strategy(self, asset: str = "BTC") -> dict:
         saved = self.store.settings()
         sid = saved.get("active") or "gates_15m"
         if sid not in self.cfg["strategies"]:
             sid = "gates_15m"
         spec = copy.deepcopy(self.cfg["strategies"][sid])
-        spec["params"].update(saved.get(f"params:{sid}") or {})
+        spec["params"] = self._params_for(sid, asset, saved)
         spec["id"] = sid
         return spec
+
+    def _apply_pending_params(self, asset: str) -> None:
+        saved = self.store.settings()
+        for sid in self.cfg["strategies"]:
+            pk = pending_key(sid, asset)
+            pending = saved.get(pk)
+            if not pending:
+                continue
+            sk = settings_key(sid, asset)
+            self.store.save_setting(sk, pending)
+            self.store.save_setting(pk, None)
+
+    def _position_open(self, st: AssetRT) -> bool:
+        pos = st.book.position
+        ticker = st.book.ticker or (st.market or {}).get("ticker")
+        return bool(pos and ticker and pos.ticker == ticker)
+
+    def _sol_confirm_secs(self, st: AssetRT, now: float, strategy: dict) -> float | None:
+        if strategy.get("kind") != "sol" or st.name != "SOL":
+            return None
+        if st.sol_confirm_since is None:
+            return 0.0
+        return max(0.0, now - st.sol_confirm_since)
+
+    def _dual_feed(self, st: AssetRT, now: float) -> tuple[bool, str]:
+        max_age = gate_locked.COMPOSITE_MAX_AGE
+        parts = []
+        ok_cb = ok_kr = False
+        if st.coinbase:
+            age = now - st.coinbase[1]
+            ok_cb = age <= max_age
+            parts.append(f"CB {age:.1f}s")
+        else:
+            parts.append("CB missing")
+        if st.kraken:
+            age = now - st.kraken[1]
+            ok_kr = age <= max_age
+            parts.append(f"KR {age:.1f}s")
+        else:
+            parts.append("KR missing")
+        return ok_cb and ok_kr, " · ".join(parts)
+
+    def _pct_move_3s(self, st: AssetRT, now: float, price: float | None) -> float | None:
+        if price is None or not st.samples:
+            return None
+        target = now - gate_locked.ARB_STALE_LOOKBACK
+        prior = None
+        for ts, px in st.samples:
+            if ts <= target:
+                prior = px
+        if prior is None or prior <= 0:
+            return None
+        return abs(price - prior) / prior
+
+    def _mid_move_3s(self, st: AssetRT, now: float) -> float | None:
+        if len(st.mid_history) < 2:
+            return None
+        recent = st.mid_history[-1][1]
+        target = now - gate_locked.ARB_STALE_LOOKBACK
+        old = None
+        for ts, mid in st.mid_history:
+            if ts <= target:
+                old = mid
+        if old is None:
+            return None
+        return recent - old
 
     def _market_view(self, st: AssetRT) -> dict:
         market = dict(st.market or {})
@@ -870,6 +943,8 @@ class Desk:
         samples = list(st.samples)
         move = move_1m_from_returns(log_return_stdev(samples, now, window), price)
         baseline = move_1m_from_returns(log_return_stdev(samples, now, base_window), price)
+        dual_ok, dual_detail = self._dual_feed(st, now)
+        sid = self._strategy(st.name)["id"]
         return {
             "composite": price,
             "composite_age": age,
@@ -881,6 +956,11 @@ class Desk:
             "buy_pct": self._buy_pct(st, now),
             "momentum": self._momentum(st, now, price),
             "crossings": st.book.crossings,
+            "dual_feed_ok": dual_ok,
+            "feed_detail": dual_detail,
+            "composite_pct_move_3s": self._pct_move_3s(st, now, price),
+            "kalshi_mid_move_3s": self._mid_move_3s(st, now),
+            "tunable_params": self._params_for(sid, st.name),
         }
 
     def _buy_pct(self, st: AssetRT, now: float) -> float | None:
@@ -918,25 +998,89 @@ class Desk:
             return -1
         return 0
 
-    def update_setting(self, active: str | None, strategy: str | None, key: str | None, value: float | None) -> dict:
+    def update_setting(
+        self,
+        active: str | None,
+        strategy: str | None,
+        key: str | None,
+        value: float | None,
+        asset: str | None = None,
+    ) -> dict:
+        now = time.time()
         if active:
             if active not in self.cfg["strategies"]:
                 return {"ok": False, "error": "unknown strategy"}
             self.store.save_setting("active", active)
         if strategy and key is not None and value is not None:
-            spec = self.cfg["strategies"].get(strategy)
-            slider = None if not spec else next((s for s in spec["sliders"] if s["key"] == key), None)
+            if not asset or asset not in self.assets:
+                return {"ok": False, "error": "asset required"}
+            sliders = slider_defs(strategy, asset)
+            slider = next((s for s in sliders if s["key"] == key), None)
             if slider is None:
                 return {"ok": False, "error": "unknown slider"}
-            num = min(float(slider["max"]), max(float(slider["min"]), float(value)))
-            current = dict(self.store.settings().get(f"params:{strategy}") or {})
+            try:
+                num = clamp_param(asset, key, float(value))
+            except KeyError:
+                return {"ok": False, "error": "unknown param"}
+            sk = settings_key(strategy, asset)
+            saved = self.store.settings()
+            current = dict(saved.get(sk) or {})
+            old = current.get(key)
+            if old is not None and abs(float(old) - num) < 1e-9:
+                return {"ok": True, "state": self.snapshot()}
             current[key] = num
-            self.store.save_setting(f"params:{strategy}", current)
+            st = self.assets[asset]
+            pending = self._position_open(st)
+            if pending:
+                pk = pending_key(strategy, asset)
+                pend = dict(saved.get(pk) or self._params_for(strategy, asset, saved))
+                pend[key] = num
+                self.store.save_setting(pk, pend)
+                self.store.add_param_change(
+                    ts=now,
+                    asset=asset,
+                    strategy=strategy,
+                    param=key,
+                    old_value=old,
+                    new_value=num,
+                    pending=True,
+                )
+            else:
+                self.store.save_setting(sk, current)
+                self.store.add_param_change(
+                    ts=now,
+                    asset=asset,
+                    strategy=strategy,
+                    param=key,
+                    old_value=old,
+                    new_value=num,
+                    pending=False,
+                )
         return {"ok": True, "state": self.snapshot()}
 
     def reset_settings(self) -> dict:
-        self.store.clear_settings()
-        return {"ok": True}
+        from desk.engine.tunable import all_defaults_for_reset
+
+        now = time.time()
+        saved = self.store.settings()
+        for combo, params in all_defaults_for_reset().items():
+            sid, ast = combo.split(":", 1)
+            sk = settings_key(sid, ast)
+            old = saved.get(sk)
+            self.store.save_setting(sk, params)
+            self.store.save_setting(pending_key(sid, ast), None)
+            for k, v in params.items():
+                self.store.add_param_change(
+                    ts=now,
+                    asset=ast,
+                    strategy=sid,
+                    param=k,
+                    old_value=(old or {}).get(k) if isinstance(old, dict) else None,
+                    new_value=v,
+                    pending=False,
+                )
+        self.store.save_setting("active", "gates_15m")
+        return {"ok": True, "state": self.snapshot()}
 
     def clear_journal(self) -> dict:
         self.store.clear_journal()

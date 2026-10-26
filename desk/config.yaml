@@ -1,4 +1,4 @@
-# Every threshold for the 15m desk. Engine code reads this file.
+# Every threshold for the 15m desk. Tunable per-asset clamps live in desk/engine/tunable.py.
 
 assets:
   BTC:
@@ -28,7 +28,6 @@ feeds:
 
 fees:
   taker_rate: 0.07
-  # Maker is lower than taker. Confirm against the current Kalshi schedule.
   maker_rate: 0.0
 
 model:
@@ -62,7 +61,6 @@ paper:
   require_gates: true
   require_positive_edge: true
   require_lag_side: false
-  lag_align_secs: 3
 
 suggest:
   exit_loss_frac: 0.42
@@ -75,90 +73,29 @@ suggest:
   recover_prob: 0.35
   thin_prob: 0.55
 
+# Strategy kinds + exit-only params. Entry tunables are per-asset (tunable.py).
 strategies:
   gates_15m:
     label: 15m Gates
     kind: gates
     log_only: false
     params:
-      edge_min: 0.02
-      flow_min: 0.58
-      vol_max: 2.0
-      price_cap: 0.65
-      min_secs_left: 60
       trail_retrace: 0.09
       breakeven_after: 0.09
-    sliders:
-      - {key: edge_min, label: Trend edge, min: 0, max: 0.2, step: 0.005, unit: dollars}
-      - {key: flow_min, label: Taker flow, min: 0.5, max: 0.8, step: 0.01, unit: percent}
-      - {key: vol_max, label: Vol vs baseline, min: 1, max: 4, step: 0.1, unit: ratio}
-      - {key: price_cap, label: Price cap, min: 0.2, max: 0.9, step: 0.01, unit: cents}
-      - {key: min_secs_left, label: Expiry safeguard, min: 0, max: 300, step: 5, unit: seconds}
-      - {key: trail_retrace, label: Trail retrace, min: 0.02, max: 0.3, step: 0.01, unit: percent}
-      - {key: breakeven_after, label: Breakeven after, min: 0.02, max: 0.3, step: 0.01, unit: cents}
   spot_arb:
     label: Spot-to-event arb
     kind: arb
     log_only: false
     params:
-      secs_min: 60
-      secs_max: 810
-      price_min: 0.40
-      price_max: 0.60
-      pad_base: 0.03
-      pad_vol: 0.02
-      vol_hot: 1.5
-      price_cap: 0.82
       escape_price: 0.82
       hard_cap: 0.85
-    sliders:
-      - {key: secs_min, label: Min seconds left, min: 0, max: 300, step: 5, unit: seconds}
-      - {key: secs_max, label: Max seconds left, min: 60, max: 900, step: 10, unit: seconds}
-      - {key: price_min, label: Band low, min: 0.1, max: 0.7, step: 0.01, unit: cents}
-      - {key: price_max, label: Band high, min: 0.3, max: 0.9, step: 0.01, unit: cents}
-      - {key: pad_base, label: Edge pad, min: 0, max: 0.1, step: 0.005, unit: cents}
-      - {key: pad_vol, label: Hot-vol extra pad, min: 0, max: 0.1, step: 0.005, unit: cents}
-      - {key: vol_hot, label: Hot vol multiple, min: 1, max: 3, step: 0.1, unit: ratio}
-      - {key: price_cap, label: Price cap, min: 0.5, max: 0.95, step: 0.01, unit: cents}
-      - {key: escape_price, label: 3-minute escape, min: 0.5, max: 0.95, step: 0.01, unit: cents}
-      - {key: hard_cap, label: Hard cap, min: 0.5, max: 0.99, step: 0.01, unit: cents}
   sol_15m:
     label: SOL 15m
     kind: sol
     log_only: false
-    params:
-      price_min: 0.35
-      price_max: 0.55
-      min_secs_left: 120
-      edge_min: 0.02
-    sliders:
-      - {key: price_min, label: Band low, min: 0.1, max: 0.6, step: 0.01, unit: cents}
-      - {key: price_max, label: Band high, min: 0.3, max: 0.8, step: 0.01, unit: cents}
-      - {key: min_secs_left, label: Min seconds left, min: 0, max: 400, step: 10, unit: seconds}
-      - {key: edge_min, label: Net edge, min: 0, max: 0.15, step: 0.005, unit: dollars}
-  hour_end:
-    label: 1h end-of-hour
-    kind: hour
-    log_only: false
-    params:
-      last_minutes: 12
-      price_min: 0.75
-      price_max: 0.88
-      stop_price: 0.40
-    sliders:
-      - {key: last_minutes, label: Last minutes of hour, min: 5, max: 30, step: 1, unit: count}
-      - {key: price_min, label: Ask low, min: 0.5, max: 0.9, step: 0.01, unit: cents}
-      - {key: price_max, label: Ask high, min: 0.6, max: 0.95, step: 0.01, unit: cents}
-      - {key: stop_price, label: Stop price, min: 0.1, max: 0.7, step: 0.01, unit: cents}
+    params: {}
   sub25:
     label: Sub-25c scanner
     kind: scanner
     log_only: true
-    params:
-      price_max: 0.25
-      edge_min: 0.05
-      blackout_secs: 120
-    sliders:
-      - {key: price_max, label: Ask below, min: 0.05, max: 0.4, step: 0.01, unit: cents}
-      - {key: edge_min, label: Net edge, min: 0, max: 0.2, step: 0.005, unit: dollars}
-      - {key: blackout_secs, label: Blackout, min: 0, max: 300, step: 10, unit: seconds}
+    params: {}

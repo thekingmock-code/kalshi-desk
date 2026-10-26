@@ -636,11 +636,12 @@ function renderStrategy(state, view) {
   }
   const spec = (state.strategies || []).find((s) => s.id === state.active);
   if (!spec) return;
-  const sig = state.active + ":" + JSON.stringify(spec.params);
+  const params = view.tunable_params || spec.params || {};
+  const sig = state.active + ":" + asset + ":" + JSON.stringify(params);
   const focused = document.activeElement && document.activeElement.closest("#sliders");
   if (sig !== sliderSig && !focused) {
     sliderSig = sig;
-    buildSliders(spec);
+    buildSliders(spec, params);
   }
   const exits = document.getElementById("exits");
   exits.replaceChildren();
@@ -672,6 +673,26 @@ function renderStrategy(state, view) {
   }
   const gates = document.getElementById("gates");
   gates.replaceChildren();
+  const locked = view.locked_gates || [];
+  if (locked.length) {
+    const box = document.createElement("div");
+    box.className = "side";
+    const h = document.createElement("h3");
+    h.textContent = "LOCKED (all sides)";
+    box.appendChild(h);
+    for (const check of locked) {
+      const row = document.createElement("div");
+      row.className = "check " + (check.ok ? "pass" : "fail");
+      const name = document.createElement("b");
+      name.textContent = (check.ok ? "PASS " : "FAIL ") + check.label;
+      const detail = document.createElement("div");
+      detail.className = "muted";
+      detail.textContent = check.detail || "";
+      row.append(name, detail);
+      box.appendChild(row);
+    }
+    gates.appendChild(box);
+  }
   for (const side of ["UP", "DOWN"]) {
     const col = document.createElement("div");
     col.className = "side";
@@ -693,9 +714,10 @@ function renderStrategy(state, view) {
   }
 }
 
-function buildSliders(spec) {
+function buildSliders(spec, params) {
   const root = document.getElementById("sliders");
   root.replaceChildren();
+  const p = params || spec.params || {};
   for (const sl of spec.sliders || []) {
     const wrap = document.createElement("label");
     wrap.className = "slider";
@@ -704,19 +726,19 @@ function buildSliders(spec) {
     const name = document.createElement("span");
     name.textContent = sl.label;
     const val = document.createElement("b");
-    val.textContent = unit(spec.params[sl.key], sl.unit);
+    val.textContent = unit(p[sl.key], sl.unit);
     top.append(name, val);
     const input = document.createElement("input");
     input.type = "range";
     input.min = sl.min;
     input.max = sl.max;
     input.step = sl.step;
-    input.value = spec.params[sl.key];
+    input.value = p[sl.key];
     input.addEventListener("input", () => {
       val.textContent = unit(Number(input.value), sl.unit);
       clearTimeout(input._t);
       input._t = setTimeout(() => {
-        postJSON("/api/settings", { strategy: spec.id, key: sl.key, value: Number(input.value) });
+        postJSON("/api/settings", { strategy: spec.id, key: sl.key, value: Number(input.value), asset: asset });
       }, 220);
     });
     wrap.append(top, input);

@@ -82,6 +82,16 @@ class Store:
                 settle_note TEXT,
                 UNIQUE(ticker, side)
             );
+            CREATE TABLE IF NOT EXISTS param_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                param TEXT NOT NULL,
+                old_value REAL,
+                new_value REAL,
+                pending INTEGER NOT NULL DEFAULT 0
+            );
             CREATE TABLE IF NOT EXISTS paper_orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL,
@@ -144,6 +154,7 @@ class Store:
         self.conn.commit()
 
     def clear_journal(self) -> None:
+        self.conn.execute("DELETE FROM param_changes")
         self.conn.execute("DELETE FROM journal")
         self.conn.execute("DELETE FROM scanner")
         self.conn.execute("DELETE FROM paper_buys")
@@ -333,9 +344,39 @@ class Store:
             out[row["key"]] = json.loads(row["value"])
         return out
 
-    def save_setting(self, key: str, value) -> None:
+    def add_param_change(
+        self,
+        *,
+        ts: float,
+        asset: str,
+        strategy: str,
+        param: str,
+        old_value: float | None,
+        new_value: float,
+        pending: bool = False,
+    ) -> None:
         self.conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, json.dumps(value)),
+            """
+            INSERT INTO param_changes (ts, asset, strategy, param, old_value, new_value, pending)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (ts, asset, strategy, param, old_value, new_value, 1 if pending else 0),
         )
+        self.conn.commit()
+
+    def param_changes(self, limit: int = 40) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM param_changes ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def save_setting(self, key: str, value) -> None:
+        if value is None:
+            self.conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+        else:
+            self.conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, json.dumps(value)),
+            )
         self.conn.commit()
