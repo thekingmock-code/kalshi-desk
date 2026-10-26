@@ -61,7 +61,7 @@ paper:
   entry_cooldown_secs: 30
   require_gates: true
   require_positive_edge: true
-  require_lag_side: true
+  require_lag_side: false
   lag_align_secs: 3
 
 suggest:
