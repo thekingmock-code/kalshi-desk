@@ -36,6 +36,11 @@ class GateContext:
     btc_momentum: int | None
     sol_confirm_secs: float | None
     params: dict
+    index_ok: bool = False
+    lag: float | None = None
+    momentum_30: int | None = None
+    momentum_60: int | None = None
+    signal_hold_secs: float | None = None
 
 
 def net_edge(prob: float | None, ask: float | None, spread: float | None, fee_fn: Callable[[float], float]) -> float | None:
@@ -246,6 +251,10 @@ def evaluate_side(
     kind = strategy.get("kind")
     if kind == "hour":
         return [_check("15m desk only", False, "use 1h product")]
+    if kind == "weekend_money":
+        from desk.engine.weekend_money import weekend_checks
+
+        return weekend_checks(ctx_base)
     locked = locked_checks(ctx_base)
     strat = strategy_checks(kind, ctx_base)
     return locked + strat

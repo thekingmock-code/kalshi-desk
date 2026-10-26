@@ -18,6 +18,19 @@ from desk.engine.suggest import SuggestCtx, decide
 ET = ZoneInfo("America/New_York")
 
 
+def _weekend_gate_summary(gates: dict) -> dict:
+    def side_stats(side: str) -> dict:
+        checks = gates.get(side) or []
+        passing = sum(1 for c in checks if c.get("ok"))
+        blocking = [c.get("label") for c in checks if not c.get("ok")]
+        return {"passing": passing, "total": len(checks), "blocking": blocking}
+
+    up, down = side_stats("UP"), side_stats("DOWN")
+    fav = "UP" if up["passing"] >= down["passing"] else "DOWN"
+    pick = up if fav == "UP" else down
+    return {"favored_side": fav, **pick}
+
+
 def et_stamp(ts: float) -> str:
     return datetime.fromtimestamp(ts, ET).strftime("%Y-%m-%d %I:%M:%S %p ET")
 
@@ -52,6 +65,10 @@ def build_asset(
     paper_cooldown_ok: bool = True,
     paper_cooldown_remaining: float = 0.0,
     has_live_position: bool = False,
+    index_ok: bool = False,
+    momentum_30: int | None = None,
+    momentum_60: int | None = None,
+    signal_hold_secs: float | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -123,8 +140,16 @@ def build_asset(
         kalshi_mid_move_3s=kalshi_mid_move_3s,
         btc_momentum=btc_momentum,
         sol_confirm_secs=sol_confirm_secs,
+        index_ok=index_ok,
+        lag=lag,
+        momentum_30=momentum_30,
+        momentum_60=momentum_60,
+        signal_hold_secs=signal_hold_secs,
     )
     locked = [c for c in gates.get("UP", []) if c.get("locked")]
+    gate_summary = None
+    if strat.get("kind") == "weekend_money":
+        gate_summary = _weekend_gate_summary(gates)
     if edge_down is not None and (edge_up is None or edge_down > edge_up):
         favored, favored_edge = "DOWN", edge_down
     elif edge_up is not None:
@@ -216,6 +241,7 @@ def build_asset(
         "chop": {"score": round(score, 1), "label": label, "parts": parts},
         "gates": gates,
         "locked_gates": locked,
+        "gate_summary": gate_summary,
         "tunable_params": params,
         "gauge": build_gauge(
             composite=composite,

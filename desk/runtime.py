@@ -66,6 +66,8 @@ class AssetRT:
     mid_history: deque = field(default_factory=deque)
     sol_confirm_side: str | None = None
     sol_confirm_since: float | None = None
+    weekend_hold_side: str | None = None
+    weekend_hold_since: float | None = None
 
     def __post_init__(self) -> None:
         self.book.asset = self.name
@@ -445,10 +447,12 @@ class Desk:
 
     def _build_view(self, st: AssetRT, now: float, *, btc_momentum: int | None = None, paper_buys: int | None = None) -> dict:
         strategy = self._strategy(st.name)
-        metrics = self._metrics(st, now)
         if paper_buys is None:
             paper_buys = self._paper_buys(st)
         sol_confirm = self._sol_confirm_secs(st, now, strategy)
+        metrics = self._metrics(st, now)
+        self._tick_weekend_hold(st, now, strategy, metrics)
+        signal_hold = self._weekend_signal_secs(st, now, strategy)
         paper_cfg = self.cfg.get("paper") or {}
         cooldown = float(paper_cfg.get("entry_cooldown_secs", 30))
         cooldown_remaining = max(0.0, cooldown - (now - st.last_paper_entry))
@@ -484,6 +488,10 @@ class Desk:
             paper_cooldown_ok=cooldown_ok,
             paper_cooldown_remaining=cooldown_remaining,
             has_live_position=has_live,
+            index_ok=metrics["index"] is not None,
+            momentum_30=metrics.get("momentum_30"),
+            momentum_60=metrics.get("momentum_60"),
+            signal_hold_secs=signal_hold,
         )
 
     def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
@@ -862,6 +870,119 @@ class Desk:
             return 0.0
         return max(0.0, now - st.sol_confirm_since)
 
+    def _weekend_signal_secs(self, st: AssetRT, now: float, strategy: dict) -> float | None:
+        if strategy.get("kind") != "weekend_money":
+            return None
+        if st.weekend_hold_since is None:
+            return 0.0
+        return max(0.0, now - st.weekend_hold_since)
+
+    def _tick_weekend_hold(self, st: AssetRT, now: float, strategy: dict, metrics: dict) -> None:
+        if strategy.get("kind") != "weekend_money":
+            st.weekend_hold_side = None
+            st.weekend_hold_since = None
+            return
+        price = metrics.get("composite")
+        probe = self._weekend_probe_gates(st, now, strategy, metrics, signal_hold_secs=0.0)
+        if not probe:
+            st.weekend_hold_side = None
+            st.weekend_hold_since = None
+            return
+        favored, up_ready, down_ready = probe
+        ready = (favored == "UP" and up_ready) or (favored == "DOWN" and down_ready)
+        if not ready:
+            st.weekend_hold_side = None
+            st.weekend_hold_since = None
+            return
+        if st.weekend_hold_side != favored:
+            st.weekend_hold_side = favored
+            st.weekend_hold_since = now
+
+    def _weekend_probe_gates(
+        self, st: AssetRT, now: float, strategy: dict, metrics: dict, *, signal_hold_secs: float
+    ) -> tuple[str, bool, bool] | None:
+        from desk.engine.strategies import gate_sides
+        from desk.engine.model import fee_dollars
+
+        market = self._market_view(st)
+        strike = market.get("strike")
+        close_ts = market.get("close_ts")
+        secs_left = None if close_ts is None else close_ts - now
+        ref = metrics["index"] if metrics.get("index") is not None else metrics.get("composite")
+        lag = None
+        if metrics.get("composite") is not None and metrics.get("index") is not None:
+            lag = metrics["composite"] - metrics["index"]
+        move = metrics.get("move_1m") or 0.0
+        p_up = sigma_t = None
+        if ref is not None and strike is not None and secs_left is not None:
+            from desk.engine.model import fair_up
+
+            p_up, sigma_t, _ = fair_up(ref, strike, move, secs_left, self.cfg["model"])
+        rate = float(self.cfg["fees"]["taker_rate"])
+        params = self._params_for(strategy["id"], st.name)
+
+        def fee_one(price: float) -> float:
+            return fee_dollars(1, price, rate)
+
+        gates = gate_sides(
+            strategy,
+            asset=st.name,
+            secs_left=secs_left,
+            yes_bid=market.get("yes_bid"),
+            yes_ask=market.get("yes_ask"),
+            no_bid=market.get("no_bid"),
+            no_ask=market.get("no_ask"),
+            p_up=p_up,
+            buy_pct=metrics.get("buy_pct"),
+            momentum=metrics.get("momentum"),
+            vol_ratio=(metrics.get("move_1m") or 0) / metrics["baseline_move"]
+            if metrics.get("baseline_move")
+            else None,
+            now=now,
+            fee_fn=fee_one,
+            params=params,
+            sigma_t=sigma_t if sigma_t and sigma_t > 0 else None,
+            ref=ref,
+            strike=strike,
+            dual_feed_ok=metrics.get("dual_feed_ok", False),
+            feed_detail=metrics.get("feed_detail", ""),
+            composite_pct_move_3s=metrics.get("composite_pct_move_3s"),
+            kalshi_mid_move_3s=metrics.get("kalshi_mid_move_3s"),
+            index_ok=metrics.get("index") is not None,
+            lag=lag,
+            momentum_30=metrics.get("momentum_30"),
+            momentum_60=metrics.get("momentum_60"),
+            signal_hold_secs=signal_hold_secs,
+        )
+
+        def ready(side: str) -> bool:
+            checks = [c for c in gates.get(side, []) if c.get("label") != "Signal hold"]
+            return bool(checks) and all(c.get("ok") for c in checks)
+
+        edge_up = edge_down = None
+        if p_up is not None:
+            from desk.engine.gates_eval import net_edge
+
+            ys = (
+                None
+                if market.get("yes_ask") is None or market.get("yes_bid") is None
+                else market["yes_ask"] - market["yes_bid"]
+            )
+            ns = (
+                None
+                if market.get("no_ask") is None or market.get("no_bid") is None
+                else market["no_ask"] - market["no_bid"]
+            )
+            edge_up = net_edge(p_up, market.get("yes_ask"), ys, fee_one)
+            edge_down = net_edge(1 - p_up, market.get("no_ask"), ns, fee_one)
+        if edge_down is not None and (edge_up is None or edge_down > edge_up):
+            favored = "DOWN"
+        elif edge_up is not None:
+            favored = "UP"
+        else:
+            return None
+        return favored, ready("UP"), ready("DOWN")
+
     def _dual_feed(self, st: AssetRT, now: float) -> tuple[bool, str]:
         max_age = gate_locked.COMPOSITE_MAX_AGE
         parts = []
@@ -964,6 +1085,8 @@ class Desk:
             "baseline_move": baseline,
             "buy_pct": self._buy_pct(st, now),
             "momentum": self._momentum(st, now, price),
+            "momentum_30": self._momentum_secs(st, now, price, 30),
+            "momentum_60": self._momentum_secs(st, now, price, 60),
             "crossings": st.book.crossings,
             "dual_feed_ok": dual_ok,
             "feed_detail": dual_detail,
@@ -986,8 +1109,7 @@ class Desk:
             return None
         return buy / total * 100.0
 
-    def _momentum(self, st: AssetRT, now: float, price: float | None) -> int | None:
-        window = float(self.cfg["feeds"]["momentum_window_secs"])
+    def _momentum_secs(self, st: AssetRT, now: float, price: float | None, window: float) -> int | None:
         if price is None or not st.samples:
             return None
         if now - st.samples[0][0] < window - 1:
@@ -1006,6 +1128,10 @@ class Desk:
         if price < prior:
             return -1
         return 0
+
+    def _momentum(self, st: AssetRT, now: float, price: float | None) -> int | None:
+        window = float(self.cfg["feeds"]["momentum_window_secs"])
+        return self._momentum_secs(st, now, price, window)
 
     def update_setting(
         self,

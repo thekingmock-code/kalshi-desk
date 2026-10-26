@@ -31,6 +31,11 @@ def gate_sides(
     kalshi_mid_move_3s: float | None = None,
     btc_momentum: int | None = None,
     sol_confirm_secs: float | None = None,
+    index_ok: bool = False,
+    lag: float | None = None,
+    momentum_30: int | None = None,
+    momentum_60: int | None = None,
+    signal_hold_secs: float | None = None,
 ) -> dict[str, list[dict]]:
     del now, already_entered_hour
     p = params or merge_params(strategy.get("id", "gates_15m"), asset, strategy.get("params"))
@@ -64,6 +69,11 @@ def gate_sides(
             btc_momentum=btc_momentum,
             sol_confirm_secs=sol_confirm_secs,
             params=p,
+            index_ok=index_ok,
+            lag=lag,
+            momentum_30=momentum_30,
+            momentum_60=momentum_60,
+            signal_hold_secs=signal_hold_secs,
         )
         return evaluate_side(strategy=strategy, ctx_base=ctx, fee_fn=fee_fn)
 

@@ -341,6 +341,7 @@ function unit(value, kind) {
   if (kind === "dollars") return "$" + n.toFixed(3);
   if (kind === "ratio") return n.toFixed(1) + "×";
   if (kind === "seconds") return Math.round(n) + "s";
+  if (kind === "cents_raw") return Math.round(n) + "¢";
   return String(Math.round(n));
 }
 function line(label, value) {
@@ -696,10 +697,10 @@ function renderTrade(view, state) {
   box.appendChild(settle);
 
   const pe = view.paper_entry;
-  if (pe && pe.enabled) {
+  if (pe && pe.enabled && !(inTrade && pe.status === "holding")) {
     const hint = document.createElement("div");
     hint.className = "paper-entry-hint " + (pe.status || "blocked");
-    const label = pe.status === "ready" ? "PAPER ENTRY" : pe.status === "holding" ? "PAPER" : "PAPER BLOCKED";
+    const label = pe.status === "ready" ? "PAPER ENTRY" : "PAPER BLOCKED";
     hint.textContent = label + " · " + (pe.reason || "—");
     box.appendChild(hint);
   }
@@ -812,9 +813,13 @@ function renderStrategy(state, view) {
     "Exit a wrong side under " + Math.round((rules.recover_prob || 0) * 100) + "% recover",
     "Take profit on a right side under " + Math.round((rules.thin_prob || 0) * 100) + "%"
   ];
-  if (spec.kind === "gates") {
+  if (spec.kind === "gates" || spec.kind === "weekend_money") {
     bits.push("Trail " + unit(spec.params.trail_retrace, "percent") + " off the high");
     bits.push("Breakeven after +" + unit(spec.params.breakeven_after, "cents"));
+  }
+  if (spec.kind === "weekend_money") {
+    bits.push("Six-gate Brati stack · 3m warmup · 2m close-out · 5s signal hold");
+    bits.push("RTI index required · 38–55¢ ask band (per asset sliders)");
   } else if (spec.kind === "arb") {
     bits.push("Escape at " + unit(spec.params.escape_price, "cents") + " · hard cap " + unit(spec.params.hard_cap, "cents"));
     bits.push("Reversal guard exits a wrong-side arb");
@@ -831,6 +836,31 @@ function renderStrategy(state, view) {
   }
   const gates = document.getElementById("gates");
   gates.replaceChildren();
+  const summary = view.gate_summary;
+  if (summary && spec.kind === "weekend_money") {
+    const box = document.createElement("div");
+    box.className = "side";
+    const h = document.createElement("h3");
+    h.textContent = "BLOCKING GATES · " + (summary.favored_side || "—");
+    box.appendChild(h);
+    const ratio = document.createElement("div");
+    ratio.className = "muted";
+    ratio.textContent = (summary.passing ?? 0) + " / " + (summary.total ?? 0) + " passing";
+    box.appendChild(ratio);
+    for (const label of summary.blocking || []) {
+      const row = document.createElement("div");
+      row.className = "check fail";
+      row.textContent = "FAIL " + label;
+      box.appendChild(row);
+    }
+    if (!(summary.blocking || []).length) {
+      const ok = document.createElement("div");
+      ok.className = "check pass";
+      ok.textContent = "All gates passing on favored side";
+      box.appendChild(ok);
+    }
+    gates.appendChild(box);
+  }
   const locked = view.locked_gates || [];
   if (locked.length) {
     const box = document.createElement("div");

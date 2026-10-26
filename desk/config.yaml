@@ -99,3 +99,10 @@ strategies:
     kind: scanner
     log_only: true
     params: {}
+  weekend_money:
+    label: THE WEEKEND MONEY
+    kind: weekend_money
+    log_only: false
+    params:
+      trail_retrace: 0.09
+      breakeven_after: 0.09
