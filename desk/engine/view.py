@@ -361,6 +361,44 @@ def journal_stats(rows: list[dict]) -> dict:
     }
 
 
+def fill_journal_rows_for_ui(rows: list[dict]) -> list[dict]:
+    """Closed simulated fills from the journal table."""
+    out = []
+    for r in rows:
+        mode = r.get("mode") or ""
+        if "paper" not in mode:
+            continue
+        pick = _shadow_direction(r.get("side"))
+        pnl = r.get("net_pnl")
+        right = r.get("right")
+        if right is None and pnl is not None:
+            right = pnl > 0
+        item = {
+            "ts": r.get("ts"),
+            "et": r.get("et"),
+            "asset": r.get("asset"),
+            "side": r.get("side"),
+            "direction": pick,
+            "outcome": None,
+            "dir_ok": None if right is None else bool(right),
+            "entry": r.get("entry"),
+            "exit_px": r.get("exit"),
+            "contracts": r.get("contracts"),
+            "net_pnl": pnl,
+            "right": right,
+            "mode": mode,
+            "chop": r.get("chop"),
+            "p_up": None,
+            "strike": None,
+            "ticker": r.get("ticker"),
+            "pending": False,
+        }
+        if item["ts"] and not item["et"]:
+            item["et"] = et_stamp(float(item["ts"]))
+        out.append(item)
+    return out
+
+
 def stamp_rows(rows: list[dict]) -> list[dict]:
     out = []
     for row in rows:

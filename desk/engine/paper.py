@@ -41,7 +41,6 @@ def can_paper_enter(
     if has_live_position:
         return False, "live Kalshi position"
     strategy = view.get("_strategy")
-    strategy = view.get("_strategy")
     if strategy and strategy.get("log_only"):
         return False, "log-only strategy"
     market = view.get("market") or {}

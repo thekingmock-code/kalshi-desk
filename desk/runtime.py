@@ -27,6 +27,7 @@ from desk.engine.strategies import all_pass
 from desk.engine.view import (
     build_asset,
     et_stamp,
+    fill_journal_rows_for_ui,
     journal_stats,
     paper_journal_stats,
     shadow_rows_for_ui,
@@ -238,7 +239,27 @@ class Desk:
             assets[name] = built
         rows = self.store.journal()
         shadow = self.store.shadow_all()
-        paper_rows = shadow_rows_for_ui(shadow)
+        paper_on = bool((self.cfg.get("paper") or {}).get("enabled"))
+        if paper_on:
+            stamped = stamp_rows(rows)
+            fill_rows = fill_journal_rows_for_ui(stamped)
+            journal_block = {
+                "stats": journal_stats(
+                    [{"net_pnl": r.get("net_pnl"), "chop": r.get("chop"), "mode": r.get("mode"), "right": r.get("right")} for r in fill_rows]
+                ),
+                "stats_label": "paper fills",
+                "rows": fill_rows,
+                "legacy_rows": stamped,
+            }
+            calibration_rows = shadow
+        else:
+            journal_block = {
+                "stats": paper_journal_stats(shadow),
+                "stats_label": "paper",
+                "rows": shadow_rows_for_ui(shadow),
+                "legacy_rows": stamp_rows(rows),
+            }
+            calibration_rows = shadow
         strategies = []
         saved = self.store.settings()
         for sid, spec in self.cfg["strategies"].items():
@@ -265,13 +286,8 @@ class Desk:
             "strategies": strategies,
             "asset_order": list(self.assets),
             "assets": assets,
-            "journal": {
-                "stats": paper_journal_stats(shadow),
-                "stats_label": "paper",
-                "rows": paper_rows,
-                "legacy_rows": stamp_rows(rows),
-            },
-            "calibration": calibration(shadow),
+            "journal": journal_block,
+            "calibration": calibration(calibration_rows),
             "scanner": stamp_rows(self.store.scans()),
             "paper_orders": stamp_rows(self.store.paper_orders()),
             "rules": self.cfg["suggest"],
@@ -522,6 +538,8 @@ class Desk:
         }
 
     def _maybe_shadow(self, st: AssetRT, now: float) -> None:
+        if (self.cfg.get("paper") or {}).get("enabled"):
+            return
         strategy = self._strategy()
         if strategy.get("log_only"):
             return

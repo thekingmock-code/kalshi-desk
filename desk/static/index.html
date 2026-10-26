@@ -324,6 +324,14 @@ function render(state) {
   renderChop(view);
   renderStrategy(state, view);
   renderJournal(state);
+  const foot = document.getElementById("foot");
+  if (foot) {
+    if (state.observe_only) {
+      foot.textContent = "Observe only — no Kalshi orders. Shadow paper scores log when gates pass; settlement uses composite vs strike (approx).";
+    } else {
+      foot.textContent = "Paper trading ON — simulated buys/sells at live bid/ask (max " + (state.paper?.max_entries_per_market ?? 2) + " entries per 15m market). No real Kalshi orders.";
+    }
+  }
   try {
     localStorage.setItem("desk-paper-journal-v1", JSON.stringify({
       rows: state.journal?.rows,
@@ -750,7 +758,9 @@ function renderJournal(state) {
     const td = document.createElement("td");
     td.colSpan = 10;
     td.className = "muted";
-    td.textContent = "No paper scores yet. Logs when gates pass with edge > 0.";
+    td.textContent = state.observe_only
+      ? "No shadow scores yet. Logs when gates pass with edge > 0."
+      : "No closed paper fills yet. Entries when gates pass with positive edge.";
     tr.appendChild(td);
     body.appendChild(tr);
   }
