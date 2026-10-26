@@ -12,6 +12,7 @@ from desk.engine.rollover import Position
 from desk.engine.gates_eval import net_edge
 from desk.engine.strategies import all_pass, gate_sides
 from desk.engine.tunable import merge_params
+from desk.engine.paper import paper_entry_status
 from desk.engine.suggest import SuggestCtx, decide
 
 ET = ZoneInfo("America/New_York")
@@ -48,6 +49,9 @@ def build_asset(
     btc_momentum: int | None = None,
     sol_confirm_secs: float | None = None,
     tunable_params: dict | None = None,
+    paper_cooldown_ok: bool = True,
+    paper_cooldown_remaining: float = 0.0,
+    has_live_position: bool = False,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -146,6 +150,24 @@ def build_asset(
     ctx = _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now, cfg, paper_buys)
     action, reasons = decide(ctx, cfg["suggest"], strategy)
     tone = _tone(action, trade.get("pnl"))
+    paper_entry = paper_entry_status(
+        cfg=cfg,
+        strategy=strat,
+        market={
+            "ticker": market.get("ticker"),
+            "expired": bool(market.get("expired"))
+            or (secs_left is not None and secs_left < 0),
+            "yes_ask": market.get("yes_ask"),
+            "no_ask": market.get("no_ask"),
+        },
+        trade=trade,
+        bot={"edge_up": edge_up, "edge_down": edge_down},
+        gates=gates,
+        buys_so_far=paper_buys,
+        cooldown_ok=paper_cooldown_ok,
+        cooldown_remaining=paper_cooldown_remaining,
+        has_live_position=has_live_position,
+    )
     tab_pos = "FLAT"
     tab_pnl = None
     if position and market.get("ticker") and position.ticker == market.get("ticker"):
@@ -189,6 +211,7 @@ def build_asset(
             "ref": ref,
         },
         "trade": trade,
+        "paper_entry": paper_entry,
         "suggestion": {"action": action, "tone": tone, "reasons": reasons},
         "chop": {"score": round(score, 1), "label": label, "parts": parts},
         "gates": gates,

@@ -38,6 +38,98 @@ def bid_for_side(market: dict, side: str) -> float | None:
     return market.get("yes_bid") if side == "UP" else market.get("no_bid")
 
 
+def first_gate_fail(checks: list[dict] | None) -> str | None:
+    for c in checks or []:
+        if not c.get("ok"):
+            return c.get("label") or "gate"
+    return None
+
+
+def human_block_reason(reason: str, view: dict) -> str:
+    bot = view.get("bot") or {}
+    favored, edge = favored_side(bot)
+    if reason == "gates fail" and favored:
+        fail = first_gate_fail((view.get("gates") or {}).get(favored))
+        if fail:
+            return f"Gates fail: {fail} ({favored})"
+        return "Gates fail"
+    if reason == "edge not positive":
+        if favored and edge is not None:
+            return f"Edge not positive ({favored} {edge * 100:+.1f}¢)"
+        return "Edge not positive"
+    return reason
+
+
+def paper_entry_status(
+    *,
+    cfg: dict,
+    strategy: dict,
+    market: dict,
+    trade: dict,
+    bot: dict,
+    gates: dict,
+    buys_so_far: int,
+    cooldown_ok: bool,
+    cooldown_remaining: float,
+    has_live_position: bool,
+) -> dict:
+    paper = cfg.get("paper") or {}
+    enabled = bool(paper.get("enabled"))
+    base = {
+        "enabled": enabled,
+        "can_enter": False,
+        "favored": None,
+        "reason": "",
+        "status": "off",
+    }
+    if not enabled:
+        base["reason"] = "Paper off (observe only)"
+        return base
+    if not trade.get("flat"):
+        if trade.get("paper"):
+            base["status"] = "holding"
+            base["reason"] = f"In paper {trade.get('direction') or 'position'} — exits follow suggestion"
+            base["favored"] = trade.get("direction")
+            return base
+        if has_live_position or trade.get("mode") == "live":
+            base["status"] = "blocked"
+            base["reason"] = "Live Kalshi position — paper entries blocked"
+            return base
+    view = {
+        "_strategy": strategy,
+        "market": market,
+        "trade": trade,
+        "bot": bot,
+        "gates": gates,
+    }
+    ok, detail = can_paper_enter(
+        view,
+        cfg=cfg,
+        buys_so_far=buys_so_far,
+        cooldown_ok=cooldown_ok,
+        has_live_position=has_live_position,
+    )
+    favored, _ = favored_side(bot)
+    if ok:
+        return {
+            "enabled": True,
+            "can_enter": True,
+            "favored": detail,
+            "reason": f"Ready — next tick buys {detail} at live ask",
+            "status": "ready",
+        }
+    reason = human_block_reason(detail, view)
+    if detail == "entry cooldown" and cooldown_remaining > 0:
+        reason = f"Entry cooldown ({cooldown_remaining:.0f}s left)"
+    return {
+        "enabled": True,
+        "can_enter": False,
+        "favored": favored,
+        "reason": reason,
+        "status": "blocked",
+    }
+
+
 def can_paper_enter(
     view: dict,
     *,

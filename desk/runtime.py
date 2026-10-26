@@ -449,6 +449,12 @@ class Desk:
         if paper_buys is None:
             paper_buys = self._paper_buys(st)
         sol_confirm = self._sol_confirm_secs(st, now, strategy)
+        paper_cfg = self.cfg.get("paper") or {}
+        cooldown = float(paper_cfg.get("entry_cooldown_secs", 30))
+        cooldown_remaining = max(0.0, cooldown - (now - st.last_paper_entry))
+        cooldown_ok = cooldown_remaining <= 0
+        pos = st.book.position
+        has_live = pos is not None and not pos.paper
         return build_asset(
             asset=st.name,
             now=now,
@@ -475,6 +481,9 @@ class Desk:
             btc_momentum=btc_momentum,
             sol_confirm_secs=sol_confirm,
             tunable_params=metrics["tunable_params"],
+            paper_cooldown_ok=cooldown_ok,
+            paper_cooldown_remaining=cooldown_remaining,
+            has_live_position=has_live,
         )
 
     def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:

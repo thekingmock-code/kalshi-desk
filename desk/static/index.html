@@ -151,6 +151,19 @@
     color: var(--muted);
     font-weight: 600;
   }
+  .paper-entry-hint {
+    font-size: 11px;
+    line-height: 1.35;
+    padding: 8px 10px;
+    margin: 8px 0;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: #00000028;
+    letter-spacing: 0.02em;
+  }
+  .paper-entry-hint.ready { border-color: var(--profit); color: var(--profit); }
+  .paper-entry-hint.blocked { color: var(--muted); }
+  .paper-entry-hint.holding { color: var(--gold); }
   .suggest {
     font-size: clamp(42px, 16vw, 76px);
     font-weight: 800;
@@ -577,7 +590,7 @@ function renderTrade(view) {
     ph.textContent = "POSITION";
     pos.appendChild(ph);
     pos.appendChild(line("Ticker", trade.ticker || m.ticker || "—"));
-    pos.appendChild(line("Held", left(trade.held_for) + " · " + left(trade.secs_left) + " on market"));
+    pos.appendChild(line("Held", dur(trade.held_for) + " · " + left(trade.secs_left) + " on market"));
     pos.appendChild(line("Entry", cents(trade.entry) + " · " + (trade.contracts ?? "—") + " ct"));
     pos.appendChild(line("Bid now", cents(trade.bid) + " (exit) · ask " + cents(trade.ask)));
     pos.appendChild(line("Cost / value", (trade.cost == null ? "—" : "$" + Number(trade.cost).toFixed(2)) + " → " + (trade.value == null ? "—" : "$" + Number(trade.value).toFixed(2))));
@@ -613,6 +626,15 @@ function renderTrade(view) {
     banner.className = "banner wait";
     banner.textContent = between ? "FLAT · between rounds" : "FLAT · no open position";
     box.appendChild(banner);
+  }
+
+  const pe = view.paper_entry;
+  if (pe && pe.enabled) {
+    const hint = document.createElement("div");
+    hint.className = "paper-entry-hint " + (pe.status || "blocked");
+    const label = pe.status === "ready" ? "PAPER ENTRY" : pe.status === "holding" ? "PAPER" : "PAPER BLOCKED";
+    hint.textContent = label + " · " + (pe.reason || "—");
+    box.appendChild(hint);
   }
 
   const mktBlock = document.createElement("div");
