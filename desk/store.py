@@ -224,6 +224,15 @@ class Store:
         self.conn.commit()
         return cur.rowcount
 
+    def shadow_purge_stale_open(self, before_ts: float) -> int:
+        """Remove open shadow rows from windows that ended before before_ts."""
+        cur = self.conn.execute(
+            "DELETE FROM shadow_paper WHERE settled = 0 AND entry_ts < ?",
+            (before_ts,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def shadow_all(self, limit: int = 120) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM shadow_paper ORDER BY entry_ts DESC, id DESC LIMIT ?",

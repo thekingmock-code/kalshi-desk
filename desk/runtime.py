@@ -65,6 +65,9 @@ class Desk:
         purged = self.store.shadow_reset_invalid_settlements()
         if purged:
             print(f"Shadow journal: removed {purged} row(s) that lacked settlement scores")
+        stale = self.store.shadow_purge_stale_open(time.time() - 1200)
+        if stale:
+            print(f"Shadow journal: removed {stale} unscored row(s) from prior windows")
         self.assets = {name: AssetRT(name, meta) for name, meta in self.cfg["assets"].items()}
         self.listeners: list[asyncio.Queue] = []
         self.authed = False
