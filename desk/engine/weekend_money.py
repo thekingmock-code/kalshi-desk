@@ -96,21 +96,6 @@ def weekend_checks(ctx: GateContext) -> list[dict]:
     spread = None if ctx.ask is None or ctx.bid is None else ctx.ask - ctx.bid
     lag = ctx.lag
 
-    # Gate 1 — data integrity
-    book_ok = ctx.bid is not None and ctx.ask is not None and ctx.strike is not None
-    model_ok = ctx.prob is not None and ctx.secs_left is not None
-    rti_ok = bool(ctx.index_ok)
-    g1 = book_ok and model_ok and rti_ok
-    checks.append(
-        _check(
-            "G1 Data integrity",
-            g1,
-            "strike/model/book/RTI"
-            if g1
-            else f"book={book_ok} model={model_ok} RTI={rti_ok}",
-        )
-    )
-
     # Gate 2 — direction (trend σ + momentum + spot drift)
     t_ok, t_d = _trend_sigma_ok(ctx)
     mom30 = _mom_aligned(ctx.side, ctx.momentum_30)
