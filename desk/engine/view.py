@@ -120,7 +120,7 @@ def build_asset(
         btc_momentum=btc_momentum,
         sol_confirm_secs=sol_confirm_secs,
     )
-    locked = [c for side in gates.values() for c in side if c.get("locked")]
+    locked = [c for c in gates.get("UP", []) if c.get("locked")]
     if edge_down is not None and (edge_up is None or edge_down > edge_up):
         favored, favored_edge = "DOWN", edge_down
     elif edge_up is not None:
@@ -129,7 +129,20 @@ def build_asset(
         favored, favored_edge = None, None
     favored_pass = all_pass(gates[favored]) if favored else False
 
-    trade = _trade(position, market, ref, strike, secs_left, lag, composite_age, rate, now, paper_buys, cfg)
+    trade = _trade(
+        position,
+        market,
+        ref,
+        strike,
+        secs_left,
+        lag,
+        composite_age,
+        rate,
+        now,
+        paper_buys,
+        cfg,
+        composite=composite,
+    )
     ctx = _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now, cfg, paper_buys)
     action, reasons = decide(ctx, cfg["suggest"], strategy)
     tone = _tone(action, trade.get("pnl"))
@@ -193,20 +206,44 @@ def build_asset(
     }
 
 
-def _trade(position, market, ref, strike, secs_left, lag, age, rate, now, paper_buys: int, cfg: dict) -> dict:
+def _trade(
+    position,
+    market,
+    ref,
+    strike,
+    secs_left,
+    lag,
+    age,
+    rate,
+    now,
+    paper_buys: int,
+    cfg: dict,
+    *,
+    composite: float | None = None,
+) -> dict:
     paper_cfg = cfg.get("paper") or {}
     max_e = int(paper_cfg.get("max_entries_per_market", 2))
+    base = {
+        "secs_left": secs_left,
+        "lag": lag,
+        "composite_age": age,
+        "strike": strike,
+        "composite": composite,
+        "settle_ref": ref,
+        "paper_entries_used": paper_buys,
+        "paper_entries_max": max_e,
+    }
     if position is None or position.ticker != market.get("ticker"):
         return {
+            **base,
             "flat": True,
-            "secs_left": secs_left,
-            "lag": lag,
-            "composite_age": age,
             "paper": False,
-            "paper_entries_used": paper_buys,
-            "paper_entries_max": max_e,
+            "mode": "flat",
+            "direction": None,
+            "ticker": market.get("ticker"),
         }
     bid = market.get("yes_bid") if position.side == "YES" else market.get("no_bid")
+    ask_side = market.get("yes_ask") if position.side == "YES" else market.get("no_ask")
     entry_fee = position.fees
     exit_fee = 0.0 if bid is None else fee_dollars(position.contracts, bid, rate)
     if position.entry is None:
@@ -217,28 +254,39 @@ def _trade(position, market, ref, strike, secs_left, lag, age, rate, now, paper_
         pnl = None if value is None else value - cost
     if ref is None or strike is None:
         right = None
-    elif position.side == "YES":
-        right = ref >= strike
+        market_up = None
     else:
-        right = ref < strike
+        market_up = ref >= strike
+        if position.side == "YES":
+            right = market_up
+        else:
+            right = not market_up
+    direction = "UP" if position.side == "YES" else "DOWN"
+    gap = None if composite is None or strike is None else round(composite - strike, 2)
     return {
+        **base,
         "flat": False,
+        "mode": "paper" if position.paper else "live",
+        "direction": direction,
         "side": position.side,
+        "ticker": position.ticker,
         "entry": position.entry,
+        "entry_ts": position.entry_ts,
         "contracts": position.contracts,
         "cost": cost,
         "value": value,
         "pnl": pnl,
         "right": right,
+        "direction_ok": right,
+        "market_up": market_up,
+        "gap_vs_strike": gap,
         "bid": bid,
-        "secs_left": secs_left,
-        "lag": lag,
-        "composite_age": age,
+        "ask": ask_side,
+        "fees_paid": entry_fee,
         "held_for": now - position.entry_ts,
         "high_water": position.high_water,
+        "chop_at_entry": position.chop,
         "paper": bool(position.paper),
-        "paper_entries_used": paper_buys,
-        "paper_entries_max": max_e,
     }
 
 

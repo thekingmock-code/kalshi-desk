@@ -121,6 +121,36 @@
     border-radius: 8px;
     background: #00000022;
   }
+  .trade-status {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    margin: 8px 0 10px;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .trade-status div {
+    padding: 8px 4px;
+    border-radius: 8px;
+    background: #00000033;
+    border: 1px solid var(--line);
+  }
+  .trade-block {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    margin: 8px 0;
+    background: #00000018;
+  }
+  .trade-block h3 {
+    margin: 0 0 6px;
+    font-size: 10px;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    font-weight: 600;
+  }
   .suggest {
     font-size: clamp(42px, 16vw, 76px);
     font-weight: 800;
@@ -276,6 +306,11 @@ function left(secs) {
   if (Number(secs) < 0) return "rolled";
   const s = Math.max(0, Math.floor(Number(secs)));
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+function dur(secs) {
+  if (secs == null || Number.isNaN(Number(secs))) return "—";
+  const s = Math.max(0, Math.floor(Number(secs)));
+  return Math.floor(s / 60) + "m " + (s % 60) + "s";
 }
 function rate(x) {
   if (x == null) return "—";
@@ -500,6 +535,14 @@ function renderTabs(state) {
   }
 }
 
+function tradeVerdict(trade) {
+  if (trade.flat) return { text: "FLAT", cls: "wait" };
+  if (trade.direction_ok == null) return { text: "OPEN", cls: "wait" };
+  return trade.direction_ok
+    ? { text: "RIGHT SIDE", cls: "profit" }
+    : { text: "WRONG SIDE", cls: "loss" };
+}
+
 function renderTrade(view) {
   const box = document.getElementById("trade");
   const trade = view.trade || {};
@@ -511,62 +554,88 @@ function renderTrade(view) {
   h.textContent = "CURRENT TRADE";
   box.appendChild(h);
   const between = m.expired || (trade.secs_left != null && trade.secs_left < 0);
-  box.appendChild(line("Market", between ? "Between rounds" : (m.ticker || "no open 15m market")));
-  box.appendChild(line("Strike", m.strike == null ? "—" : spot(m.strike)));
-  box.appendChild(line("UP bid / ask", cents(m.yes_bid) + " / " + cents(m.yes_ask)));
-  box.appendChild(line("DOWN bid / ask", cents(m.no_bid) + " / " + cents(m.no_ask)));
+  const verdict = tradeVerdict(trade);
+
+  if (!trade.flat) {
+    const status = document.createElement("div");
+    status.className = "trade-status";
+    const mode = document.createElement("div");
+    mode.textContent = (trade.mode || "live").toUpperCase();
+    mode.className = trade.mode === "paper" ? "wait" : "profit";
+    const dir = document.createElement("div");
+    dir.textContent = (trade.direction || "—") + " · " + (trade.side || "—");
+    dir.className = trade.direction === "UP" ? "profit" : "loss";
+    const v = document.createElement("div");
+    v.textContent = verdict.text;
+    v.className = verdict.cls;
+    status.append(mode, dir, v);
+    box.appendChild(status);
+
+    const pos = document.createElement("div");
+    pos.className = "trade-block";
+    const ph = document.createElement("h3");
+    ph.textContent = "POSITION";
+    pos.appendChild(ph);
+    pos.appendChild(line("Ticker", trade.ticker || m.ticker || "—"));
+    pos.appendChild(line("Held", left(trade.held_for) + " · " + left(trade.secs_left) + " on market"));
+    pos.appendChild(line("Entry", cents(trade.entry) + " · " + (trade.contracts ?? "—") + " ct"));
+    pos.appendChild(line("Bid now", cents(trade.bid) + " (exit) · ask " + cents(trade.ask)));
+    pos.appendChild(line("Cost / value", (trade.cost == null ? "—" : "$" + Number(trade.cost).toFixed(2)) + " → " + (trade.value == null ? "—" : "$" + Number(trade.value).toFixed(2))));
+    const pnlRow = line("Mark P&L", signedMoney(trade.pnl));
+    pnlRow.lastChild.className = pnlClass(trade.pnl);
+    pos.appendChild(pnlRow);
+    pos.appendChild(line("Fees in", trade.fees_paid == null ? "—" : "$" + Number(trade.fees_paid).toFixed(2)));
+    pos.appendChild(line("High bid", cents(trade.high_water)));
+    pos.appendChild(line("Chop @ entry", trade.chop_at_entry == null ? "—" : Number(trade.chop_at_entry).toFixed(0)));
+    if (trade.paper) {
+      pos.appendChild(line("Paper fills", (trade.paper_entries_used ?? 0) + "/" + (trade.paper_entries_max ?? 1) + " this market"));
+    }
+    box.appendChild(pos);
+
+    const settle = document.createElement("div");
+    settle.className = "trade-block";
+    const sh = document.createElement("h3");
+    sh.textContent = "VS STRIKE (settle proxy)";
+    settle.appendChild(sh);
+    settle.appendChild(line("Strike", trade.strike == null ? "—" : spot(trade.strike)));
+    settle.appendChild(line("Composite", spot(trade.composite ?? bot.composite)));
+    settle.appendChild(line("Settle ref", spot(trade.settle_ref ?? bot.ref)));
+    settle.appendChild(line("Gap", trade.gap_vs_strike == null ? "—" : signedMoney(trade.gap_vs_strike)));
+    const mkt = trade.market_up == null ? "—" : trade.market_up ? "UP (≥ strike)" : "DOWN (< strike)";
+    settle.appendChild(line("Market now", mkt));
+    const pick = trade.direction || "—";
+    const ok = trade.direction_ok;
+    const align = ok == null ? "unknown" : ok ? pick + " matches market" : pick + " vs market";
+    settle.appendChild(line("Your pick", align));
+    box.appendChild(settle);
+  } else {
+    const banner = document.createElement("div");
+    banner.className = "banner wait";
+    banner.textContent = between ? "FLAT · between rounds" : "FLAT · no open position";
+    box.appendChild(banner);
+  }
+
+  const mktBlock = document.createElement("div");
+  mktBlock.className = "trade-block";
+  const mh = document.createElement("h3");
+  mh.textContent = trade.flat ? "MARKET" : "MARKET CONTEXT";
+  mktBlock.appendChild(mh);
+  mktBlock.appendChild(line("Market", between ? "Between rounds" : (m.ticker || "no open 15m market")));
+  mktBlock.appendChild(line("Strike", m.strike == null ? "—" : spot(m.strike)));
+  mktBlock.appendChild(line("UP bid / ask", cents(m.yes_bid) + " / " + cents(m.yes_ask)));
+  mktBlock.appendChild(line("DOWN bid / ask", cents(m.no_bid) + " / " + cents(m.no_ask)));
   const ages = bot.feed_ages || {};
   const fresh = (bot.feeds || []).join(" + ") || "no fresh feed";
   const stale = Object.keys(ages).filter((name) => !(bot.feeds || []).includes(name));
   const staleNote = stale.map((name) => name + " " + Number(ages[name]).toFixed(0) + "s old").join(", ");
-  box.appendChild(line("Composite", spot(bot.composite) + " · " + fresh + (bot.single_feed ? " · single feed" : "") + (staleNote ? " · " + staleNote : "")));
-  box.appendChild(line("Kalshi index", spot(bot.index)));
-  box.appendChild(line("Lag", lagText(bot.lag)));
-  const mom = bot.momentum == null ? "unknown" : bot.momentum > 0 ? "up" : bot.momentum < 0 ? "down" : "flat";
-  box.appendChild(line("1m move", bot.move_1m == null ? "—" : "$" + Number(bot.move_1m).toFixed(2)));
-  box.appendChild(line("Vol vs baseline", bot.vol_ratio == null ? "—" : Number(bot.vol_ratio).toFixed(2) + "×"));
-  box.appendChild(line("Taker buy", bot.buy_pct == null ? "—" : Math.round(bot.buy_pct) + "%"));
-  box.appendChild(line("Momentum", mom));
-  box.appendChild(line("P(up)", bot.p_up == null ? "—" : Math.round(bot.p_up * 100) + "%"));
-  const banner = document.createElement("div");
-  banner.className = "banner";
-  if (trade.flat) {
-    banner.textContent = "FLAT";
-    banner.classList.add("wait");
-  } else if (trade.right == null) {
-    banner.textContent = trade.side === "YES" ? "IN UP" : "IN DOWN";
-    banner.classList.add("wait");
-  } else if (trade.right) {
-    banner.textContent = (trade.side === "YES" ? "UP · YES" : "DOWN · NO") + " · RIGHT";
-    banner.classList.add("profit");
-  } else {
-    banner.textContent = (trade.side === "YES" ? "UP · YES" : "DOWN · NO") + " · WRONG";
-    banner.classList.add("loss");
-  }
-  box.appendChild(banner);
-  if (trade.paper) {
-    box.appendChild(line("Mode", "PAPER · entries " + (trade.paper_entries_used ?? 0) + "/" + (trade.paper_entries_max ?? 2) + " this market"));
-  }
-  if (!trade.flat) {
-    box.appendChild(line("Side", trade.side === "YES" ? "YES · UP" : "NO · DOWN"));
-    box.appendChild(line("Entry", cents(trade.entry)));
-    box.appendChild(line("Contracts", trade.contracts == null ? "—" : String(trade.contracts)));
-    box.appendChild(line("Cost", trade.cost == null ? "—" : "$" + Number(trade.cost).toFixed(2)));
-    box.appendChild(line("Value", trade.value == null ? "—" : "$" + Number(trade.value).toFixed(2)));
-    const pnl = line("P&L", signedMoney(trade.pnl));
-    pnl.lastChild.className = pnlClass(trade.pnl);
-    box.appendChild(pnl);
-  }
+  mktBlock.appendChild(line("Composite", spot(bot.composite) + " · " + fresh + (staleNote ? " · " + staleNote : "")));
+  mktBlock.appendChild(line("Lag", lagText(bot.lag)));
+  mktBlock.appendChild(line("P(up)", bot.p_up == null ? "—" : Math.round(bot.p_up * 100) + "%"));
+  box.appendChild(mktBlock);
+
   const cmp = document.createElement("div");
   cmp.className = "row";
-  const leftL = document.createElement("span");
-  leftL.textContent = left(trade.secs_left) + " left";
-  const lagL = document.createElement("span");
-  lagL.textContent = "lag " + lagText(trade.lag);
-  const age = document.createElement("span");
-  age.className = "muted";
-  age.textContent = bot.composite_age == null ? "composite —" : "composite " + Number(bot.composite_age).toFixed(1) + "s";
-  cmp.append(leftL, lagL, age);
+  cmp.appendChild(Object.assign(document.createElement("span"), { textContent: left(trade.secs_left) + " left" }));
   box.appendChild(cmp);
 }
 
