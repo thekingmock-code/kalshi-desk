@@ -162,24 +162,6 @@
   .foot { color: var(--muted); font-size: 11px; margin: 12px 4px; }
   .live { width: 8px; height: 8px; border-radius: 99px; background: var(--muted); display: inline-block; }
   .live.on { background: var(--green); }
-  .plan-step {
-    border-top: 1px solid var(--line);
-    padding: 8px 0;
-    font-size: 12px;
-  }
-  .plan-step:first-of-type { border-top: 0; padding-top: 0; }
-  .plan-q { font-weight: 700; margin-bottom: 4px; }
-  .plan-a { display: flex; justify-content: space-between; gap: 8px; }
-  .plan-hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
-  .plan-verdict {
-    margin-top: 10px;
-    padding: 10px;
-    border-radius: 8px;
-    border: 1px solid var(--line);
-    font-size: 12px;
-    line-height: 1.45;
-  }
-  .plan-verdict b { display: block; font-size: 11px; letter-spacing: 0.12em; color: var(--gold); margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -197,7 +179,6 @@
   <main id="main">
     <section id="trade"><h2>CURRENT TRADE</h2><p class="muted">Connecting…</p></section>
     <section id="suggestion"><h2>SUGGESTION</h2><p class="suggest wait">WAIT</p></section>
-    <section id="plan"><h2>SUGGESTION PLAN</h2><p class="muted">Questions update every second from live data. Use this before you act outside the desk.</p><div id="plan-steps"></div><div id="plan-verdict" class="plan-verdict"></div></section>
     <section id="chop"><h2>CHOP VS REAL</h2></section>
     <section id="strategy">
       <h2>STRATEGY</h2>
@@ -310,7 +291,6 @@ function render(state) {
   const view = state.assets[asset];
   renderTrade(view);
   renderSuggestion(view);
-  renderPlan(state, view);
   renderChop(view);
   renderStrategy(state, view);
   renderJournal(state);
