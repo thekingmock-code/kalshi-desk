@@ -235,6 +235,7 @@
       <div class="brand">XVANTAGE <span>15m</span></div>
       <span id="dot" class="live"></span>
       <div id="clock">—</div>
+      <div id="linkStatus" class="muted" style="font-size:10px;margin-top:4px">Connecting…</div>
       <button id="theme" class="ghost" type="button">Light</button>
     </header>
     <p id="note" class="note" hidden></p>
@@ -356,11 +357,17 @@ function line(label, value) {
   return row;
 }
 
+function setLinkStatus(text) {
+  const el = document.getElementById("linkStatus");
+  if (el) el.textContent = text;
+}
+
 function render(state) {
   last = state;
   if (!state || !state.assets) return;
   if (!state.assets[asset]) asset = (state.asset_order || assetOrder)[0];
   document.getElementById("clock").textContent = state.et || "";
+  setLinkStatus((wsConnected ? "Live (WebSocket)" : "Live (HTTP poll)") + " · updated " + (state.et || "—"));
   const note = document.getElementById("note");
   note.hidden = !state.auth_note;
   note.textContent = state.auth_note || "";
@@ -1062,6 +1069,7 @@ let pollTimer = null;
 let wsConnected = false;
 
 function showUnreachable() {
+  setLinkStatus("Desk unreachable — retrying…");
   if (last) return;
   const trade = document.getElementById("trade");
   if (!trade) return;
@@ -1119,6 +1127,7 @@ function connect() {
     wsConnected = true;
     dot.classList.add("on");
     stopPoll();
+    setLinkStatus("Live (WebSocket) · connecting…");
   };
   ws.onmessage = (ev) => {
     try { render(JSON.parse(ev.data)); } catch (err) { /* ignore a bad frame */ }
