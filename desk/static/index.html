@@ -162,6 +162,26 @@
   .foot { color: var(--muted); font-size: 11px; margin: 12px 4px; }
   .live { width: 8px; height: 8px; border-radius: 99px; background: var(--muted); display: inline-block; }
   .live.on { background: var(--green); }
+  .gauge-bar {
+    position: relative;
+    height: 14px;
+    border-radius: 99px;
+    overflow: hidden;
+    background: var(--line);
+    margin: 8px 0 4px;
+  }
+  .gauge-bar .left { position: absolute; left: 0; top: 0; bottom: 0; width: 50%; background: color-mix(in srgb, var(--red) 35%, transparent); }
+  .gauge-bar .right { position: absolute; right: 0; top: 0; bottom: 0; width: 50%; background: color-mix(in srgb, var(--green) 35%, transparent); }
+  .gauge-bar .mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--gold); }
+  .gauge-bar .dot {
+    position: absolute; top: 2px; width: 10px; height: 10px; border-radius: 99px;
+    background: var(--ink); border: 2px solid var(--gold); margin-left: -5px;
+  }
+  .mini-chart { width: 100%; height: 128px; display: block; }
+  .chart-labels { display: flex; justify-content: flex-end; gap: 10px; font-size: 10px; margin-top: 2px; }
+  .cal-table { width: 100%; font-size: 10px; margin-top: 8px; border-collapse: collapse; }
+  .cal-table th, .cal-table td { padding: 3px 4px; border-bottom: 1px solid var(--line); text-align: right; }
+  .cal-table th:first-child, .cal-table td:first-child { text-align: left; }
 </style>
 </head>
 <body>
@@ -178,6 +198,8 @@
   <nav id="tabs" class="tabs"></nav>
   <main id="main">
     <section id="trade"><h2>CURRENT TRADE</h2><p class="muted">Connecting…</p></section>
+    <section id="gauge"><h2>DISTANCE TO STRIKE</h2><p class="muted">no data</p></section>
+    <section id="minichart"><h2>COMPOSITE VS STRIKE</h2><svg id="chartSvg" class="mini-chart" viewBox="0 0 320 128" preserveAspectRatio="none"></svg><div id="chartLabels" class="chart-labels"></div></section>
     <section id="suggestion"><h2>SUGGESTION</h2><p class="suggest wait">WAIT</p></section>
     <section id="chop"><h2>CHOP VS REAL</h2></section>
     <section id="strategy">
@@ -189,14 +211,18 @@
       <div class="actions"><button id="reset" class="ghost" type="button">Reset thresholds</button></div>
     </section>
     <section id="journal">
-      <h2>JOURNAL</h2>
+      <h2 id="journalTitle">JOURNAL</h2>
       <div id="jstats" class="stats"></div>
+      <table class="cal-table" id="calibration">
+        <thead><tr><th>P(up) bucket</th><th>n</th><th>UP rate</th></tr></thead>
+        <tbody id="calbody"></tbody>
+      </table>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Time ET</th><th>Asset</th><th>Side</th><th>Entry</th><th>Exit</th>
-              <th>Qty</th><th>Net P&amp;L</th><th>Call</th><th>Mode</th><th>Chop</th>
+              <th>P(up)</th><th>Strike</th><th>Net P&amp;L</th><th>Result</th><th>Chop</th>
             </tr>
           </thead>
           <tbody id="jbody"></tbody>
@@ -205,7 +231,7 @@
       <div id="scans"></div>
       <div class="actions"><button id="clear" class="danger" type="button">Clear journal</button></div>
     </section>
-    <p class="foot" id="foot">Paper mode fills at live ask/bid with real fees — max two entries per 15m market, no Kalshi orders sent. 15-minute BTC edge after fees looks thin in public data; validate in the journal. Composite lead, BNB, and chop weights are unverified.</p>
+    <p class="foot" id="foot">Observe only — no Kalshi orders. Shadow paper scores log when gates pass; settlement uses composite vs strike (approx). Composite lead, BNB, and chop weights are unverified.</p>
   </main>
 </div>
 <script>
@@ -214,6 +240,7 @@ let asset = localStorage.getItem("desk-asset") || "BTC";
 let last = null;
 let sliderSig = "";
 let arm = 0;
+let chartKey = "";
 
 const root = document.documentElement;
 function applyTheme(theme) {
@@ -289,17 +316,148 @@ function render(state) {
   note.textContent = state.auth_note || "";
   renderTabs(state);
   const foot = document.getElementById("foot");
-  if (foot) {
-    foot.textContent = state.observe_only
-      ? "Observe only. No paper and no real orders. Edge after fees is often thin — validate in the journal."
-      : "Paper trading: simulated fills at live ask/bid with real fees. Max " + (state.paper?.max_entries_per_market || 2) + " entries per 15m market. No Kalshi orders are sent.";
-  }
   const view = state.assets[asset];
   renderTrade(view);
+  renderGauge(view);
+  renderMiniChart(view);
   renderSuggestion(view);
   renderChop(view);
   renderStrategy(state, view);
   renderJournal(state);
+  try {
+    localStorage.setItem("desk-paper-journal-v1", JSON.stringify({
+      rows: state.journal?.rows,
+      stats: state.journal?.stats,
+      calibration: state.calibration,
+      savedAt: state.now,
+    }));
+  } catch (err) { /* ignore quota */ }
+}
+
+function renderGauge(view) {
+  const box = document.getElementById("gauge");
+  const g = view.gauge || { ok: false };
+  box.replaceChildren();
+  const h = document.createElement("h2");
+  h.textContent = "DISTANCE TO STRIKE";
+  box.appendChild(h);
+  if (!g.ok) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "no data";
+    box.appendChild(p);
+    return;
+  }
+  const sign = g.gap_usd > 0 ? "+" : g.gap_usd < 0 ? "−" : "";
+  box.appendChild(line("Gap", sign + "$" + Math.abs(g.gap_usd).toFixed(2) + " · " + g.gap_pct + "%"));
+  box.appendChild(line("Sigma", g.sigma == null ? "—" : g.sigma + "σ · favors " + g.favored));
+  const need = g.required_abs_usd || 0;
+  const mult = g.mult_1m == null ? "—" : g.mult_1m.toFixed(1) + "× 1m move";
+  const vol = g.vol_ratio == null ? "" : " · vol " + Number(g.vol_ratio).toFixed(2) + "× baseline";
+  box.appendChild(line("Needs", "needs +" + spot(need) + " in " + left(g.secs_left) + " · " + mult + vol));
+  const bar = document.createElement("div");
+  bar.className = "gauge-bar";
+  bar.innerHTML = '<div class="left"></div><div class="right"></div><div class="mid"></div>';
+  const dot = document.createElement("div");
+  dot.className = "dot";
+  const pos = g.bar_pos == null ? 0.5 : (g.bar_pos + 3) / 6;
+  dot.style.left = (Math.max(0, Math.min(1, pos)) * 100) + "%";
+  bar.appendChild(dot);
+  box.appendChild(bar);
+}
+
+function renderMiniChart(view) {
+  const ch = view.chart || {};
+  const svg = document.getElementById("chartSvg");
+  const labels = document.getElementById("chartLabels");
+  if (!svg || !labels) return;
+  if (!ch.ok || !ch.points || !ch.points.length) {
+    chartKey = "";
+    svg.replaceChildren();
+    labels.textContent = "no data";
+    return;
+  }
+  const sig = (view.market?.ticker || "") + ":" + ch.points.length + ":" + ch.points[ch.points.length - 1].t;
+  const w = 320;
+  const h = 128;
+  const pad = { l: 4, r: 52, t: 8, b: 16 };
+  const open = ch.open_ts || 0;
+  const close = ch.close_ts || (open + 900);
+  const tMax = Math.max(60, close - open);
+  const prices = [];
+  for (const p of ch.points) {
+    if (p.c != null) prices.push(p.c);
+    if (p.cb != null) prices.push(p.cb);
+    if (p.kr != null) prices.push(p.kr);
+    if (p.s != null) prices.push(p.s);
+  }
+  if (ch.strike != null) prices.push(ch.strike);
+  let yMin = Math.min(...prices);
+  let yMax = Math.max(...prices);
+  if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  const x = (t) => pad.l + (t / tMax) * (w - pad.l - pad.r);
+  const y = (v) => pad.t + (1 - (v - yMin) / (yMax - yMin)) * (h - pad.t - pad.b);
+  const linePath = (key) => {
+    let d = "";
+    for (const p of ch.points) {
+      const v = p[key];
+      if (v == null) continue;
+      d += (d ? " L" : "M") + x(p.t).toFixed(1) + " " + y(v).toFixed(1);
+    }
+    return d;
+  };
+  if (sig !== chartKey) {
+    chartKey = sig;
+    svg.replaceChildren();
+    const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+    svg.appendChild(defs);
+    const shade = (x0, x1, cls) => {
+      const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      r.setAttribute("x", String(x0));
+      r.setAttribute("y", String(pad.t));
+      r.setAttribute("width", String(Math.max(0, x1 - x0)));
+      r.setAttribute("height", String(h - pad.t - pad.b));
+      r.setAttribute("class", cls);
+      r.setAttribute("fill", cls === "grace" ? "color-mix(in srgb, var(--gold) 12%, transparent)" : "color-mix(in srgb, var(--red) 10%, transparent)");
+      svg.appendChild(r);
+    };
+    const graceEnd = ch.grace_secs || 75;
+    const safeStart = tMax - (ch.safeguard_secs || 60);
+    shade(0, x(Math.min(graceEnd, tMax)), "grace");
+    shade(x(Math.max(0, safeStart)), x(tMax), "safe");
+    if (ch.strike != null) {
+      const st = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      st.setAttribute("x1", String(pad.l));
+      st.setAttribute("x2", String(w - pad.r));
+      st.setAttribute("y1", String(y(ch.strike)));
+      st.setAttribute("y2", String(y(ch.strike)));
+      st.setAttribute("stroke", "var(--gold)");
+      st.setAttribute("stroke-width", "1");
+      st.setAttribute("stroke-dasharray", "4 3");
+      svg.appendChild(st);
+    }
+    ["cb", "kr"].forEach((k, i) => {
+      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      path.setAttribute("d", linePath(k));
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "var(--muted)");
+      path.setAttribute("stroke-width", "1");
+      path.setAttribute("opacity", i === 0 ? "0.45" : "0.35");
+      svg.appendChild(path);
+    });
+    const comp = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    comp.setAttribute("id", "chartComposite");
+    comp.setAttribute("fill", "none");
+    comp.setAttribute("stroke", "var(--ink)");
+    comp.setAttribute("stroke-width", "2");
+    svg.appendChild(comp);
+  }
+  const compPath = svg.querySelector("#chartComposite");
+  if (compPath) compPath.setAttribute("d", linePath("c"));
+  const cur = ch.current || {};
+  labels.replaceChildren();
+  const mk = (txt) => { const s = document.createElement("span"); s.textContent = txt; return s; };
+  labels.append(mk("C " + spot(cur.c)), mk("K " + spot(cur.strike ?? ch.strike)));
 }
 
 function renderTabs(state) {
@@ -561,10 +719,13 @@ function buildSliders(spec) {
 
 function renderJournal(state) {
   const stats = (state.journal && state.journal.stats) || {};
+  const label = (state.journal && state.journal.stats_label) || "paper";
+  const jt = document.getElementById("journalTitle");
+  if (jt) jt.textContent = "JOURNAL · " + label + " stats";
   const box = document.getElementById("jstats");
   box.replaceChildren();
   const items = [
-    ["Trades", stats.trades ?? 0],
+    ["Paper trades", stats.trades ?? 0],
     ["Win rate", rate(stats.win_rate)],
     ["Net P&L", signedMoney(stats.net_pnl || 0)],
     ["Win rate chop ≥ 70", rate(stats.win_rate_chop_70) + " (" + (stats.chop_70_n || 0) + ")"],
@@ -589,33 +750,47 @@ function renderJournal(state) {
     const td = document.createElement("td");
     td.colSpan = 10;
     td.className = "muted";
-    td.textContent = "No closed trades yet. This desk only watches.";
+    td.textContent = "No paper scores yet. Logs when gates pass with edge > 0.";
     tr.appendChild(td);
     body.appendChild(tr);
   }
   for (const row of rows) {
     const tr = document.createElement("tr");
-    const call = row.right == null ? "—" : row.right ? "RIGHT" : "WRONG";
+    let result = "OPEN";
+    if (!row.pending) result = row.right ? "WIN" : "LOSS";
     const cells = [
       row.et || "—",
       row.asset || "—",
       row.side || "—",
       cents(row.entry),
-      cents(row.exit_px),
-      row.contracts == null ? "—" : String(row.contracts),
-      signedMoney(row.net_pnl),
-      call,
-      row.mode || "—",
+      row.pending ? "—" : cents(row.exit_px),
+      row.p_up == null ? "—" : Math.round(row.p_up * 100) + "%",
+      row.strike == null ? "—" : spot(row.strike),
+      row.pending ? "—" : signedMoney(row.net_pnl),
+      result,
       row.chop == null ? "—" : Number(row.chop).toFixed(0)
     ];
     cells.forEach((text, i) => {
       const td = document.createElement("td");
       td.textContent = text;
-      if (i === 6) td.className = pnlClass(row.net_pnl);
-      if (i === 7) td.className = row.right == null ? "wait" : row.right ? "profit" : "loss";
+      if (i === 7) td.className = row.pending ? "wait" : pnlClass(row.net_pnl);
+      if (i === 8) td.className = row.pending ? "wait" : row.right ? "profit" : "loss";
       tr.appendChild(td);
     });
     body.appendChild(tr);
+  }
+  const calbody = document.getElementById("calbody");
+  if (calbody) {
+    calbody.replaceChildren();
+    for (const b of state.calibration || []) {
+      const tr = document.createElement("tr");
+      [b.label, String(b.n), b.up_rate == null ? "—" : Math.round(b.up_rate * 100) + "%"].forEach((text) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        tr.appendChild(td);
+      });
+      calbody.appendChild(tr);
+    }
   }
   const scans = document.getElementById("scans");
   scans.replaceChildren();
@@ -648,6 +823,7 @@ document.getElementById("clear").onclick = () => {
     arm = 0;
     btn.textContent = "Clear journal";
     postJSON("/api/journal/clear", {});
+    try { localStorage.removeItem("desk-paper-journal-v1"); } catch (err) { /* ignore */ }
     return;
   }
   arm = now;

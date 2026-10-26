@@ -62,6 +62,26 @@ class Store:
                 fees REAL NOT NULL,
                 high_water REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS shadow_paper (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                side TEXT NOT NULL,
+                entry_ts REAL NOT NULL,
+                entry_ask REAL,
+                p_up REAL,
+                chop REAL,
+                strike REAL,
+                gates_json TEXT,
+                settled INTEGER NOT NULL DEFAULT 0,
+                settle_composite REAL,
+                up_won INTEGER,
+                right INTEGER,
+                exit_px REAL,
+                net_pnl REAL,
+                settle_note TEXT,
+                UNIQUE(ticker, side)
+            );
             CREATE TABLE IF NOT EXISTS paper_orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL,
@@ -129,7 +149,72 @@ class Store:
         self.conn.execute("DELETE FROM paper_buys")
         self.conn.execute("DELETE FROM paper_orders")
         self.conn.execute("DELETE FROM paper_open")
+        self.conn.execute("DELETE FROM shadow_paper")
         self.conn.commit()
+
+    def shadow_try_insert(self, row: dict) -> bool:
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO shadow_paper
+                (ticker, asset, side, entry_ts, entry_ask, p_up, chop, strike, gates_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["ticker"],
+                    row["asset"],
+                    row["side"],
+                    row["entry_ts"],
+                    row.get("entry_ask"),
+                    row.get("p_up"),
+                    row.get("chop"),
+                    row.get("strike"),
+                    row.get("gates_json"),
+                ),
+            )
+            self.conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def shadow_unsettled(self, ticker: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM shadow_paper WHERE ticker = ? AND settled = 0",
+            (ticker,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def shadow_settle_row(self, row_id: int, updates: dict) -> None:
+        self.conn.execute(
+            """
+            UPDATE shadow_paper SET
+              settled = 1,
+              settle_composite = ?,
+              up_won = ?,
+              right = ?,
+              exit_px = ?,
+              net_pnl = ?,
+              settle_note = ?
+            WHERE id = ?
+            """,
+            (
+                updates.get("settle_composite"),
+                updates.get("up_won"),
+                updates.get("right"),
+                updates.get("exit_px"),
+                updates.get("net_pnl"),
+                updates.get("settle_note"),
+                row_id,
+            ),
+        )
+        self.conn.commit()
+
+    def shadow_all(self, limit: int = 120) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM shadow_paper ORDER BY entry_ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def paper_buy_count(self, ticker: str) -> int:
         row = self.conn.execute("SELECT count FROM paper_buys WHERE ticker = ?", (ticker,)).fetchone()

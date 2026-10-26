@@ -54,7 +54,7 @@ chop:
   mixed_min: 40
 
 paper:
-  enabled: true
+  enabled: false
   max_entries_per_market: 2
   contracts: 1
   entry_cooldown_secs: 30

@@ -6,6 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from desk.engine.chop import chop_label, chop_score
+from desk.engine.gauge import build_gauge
 from desk.engine.model import fair_up, fee_dollars
 from desk.engine.rollover import Position
 from desk.engine.strategies import all_pass, gate_sides
@@ -37,6 +38,7 @@ def build_asset(
     position: Position | None,
     already_entered_hour: bool,
     paper_buys: int = 0,
+    chart: dict | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -147,6 +149,15 @@ def build_asset(
         "suggestion": {"action": action, "tone": tone, "reasons": reasons},
         "chop": {"score": round(score, 1), "label": label, "parts": parts},
         "gates": gates,
+        "gauge": build_gauge(
+            composite=composite,
+            strike=strike,
+            move_1m=move_1m,
+            baseline_move=baseline_move,
+            secs_left=secs_left,
+            favored=favored,
+        ),
+        "chart": chart or {"ok": False},
     }
 
 
@@ -259,6 +270,46 @@ def _tone(action: str, pnl: float | None) -> str:
     if pnl < 0:
         return "loss"
     return "wait"
+
+
+def paper_journal_stats(rows: list[dict]) -> dict:
+    settled = [r for r in rows if r.get("settled")]
+    return journal_stats(
+        [
+            {
+                "net_pnl": r.get("net_pnl"),
+                "chop": r.get("chop"),
+                "mode": "paper",
+            }
+            for r in settled
+        ]
+    )
+
+
+def shadow_rows_for_ui(rows: list[dict]) -> list[dict]:
+    out = []
+    for r in rows:
+        item = {
+            "ts": r.get("entry_ts"),
+            "asset": r.get("asset"),
+            "side": r.get("side"),
+            "entry": r.get("entry_ask"),
+            "exit_px": r.get("exit_px"),
+            "contracts": 1,
+            "net_pnl": r.get("net_pnl"),
+            "right": None if not r.get("settled") else bool(r.get("right")),
+            "mode": "paper",
+            "chop": r.get("chop"),
+            "p_up": r.get("p_up"),
+            "strike": r.get("strike"),
+            "ticker": r.get("ticker"),
+            "pending": not r.get("settled"),
+            "gates": r.get("gates_json"),
+        }
+        if item["ts"]:
+            item["et"] = et_stamp(float(item["ts"]))
+        out.append(item)
+    return out
 
 
 def journal_stats(rows: list[dict]) -> dict:

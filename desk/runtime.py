@@ -5,6 +5,7 @@ import asyncio
 import copy
 import time
 from collections import deque
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,8 +16,22 @@ from desk.engine.load import load_config
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
 from desk.engine.paper import can_paper_enter, paper_buy, side_to_yes
+from desk.engine.shadow import (
+    calibration,
+    gates_passed_labels,
+    settle_shadow_row,
+    should_log_shadow,
+    side_edge_and_ask,
+)
 from desk.engine.strategies import all_pass
-from desk.engine.view import build_asset, et_stamp, journal_stats, stamp_rows
+from desk.engine.view import (
+    build_asset,
+    et_stamp,
+    journal_stats,
+    paper_journal_stats,
+    shadow_rows_for_ui,
+    stamp_rows,
+)
 from desk.feeds import coinbase, kalshi, kraken
 from desk.store import Store
 
@@ -36,6 +51,8 @@ class AssetRT:
     market: dict = field(default_factory=dict)
     scan_at: dict = field(default_factory=dict)
     last_paper_entry: float = 0.0
+    chart_ticker: str | None = None
+    chart_points: deque = field(default_factory=deque)
 
     def __post_init__(self) -> None:
         self.book.asset = self.name
@@ -206,6 +223,7 @@ class Desk:
                 position=st.book.position,
                 already_entered_hour=self._already_entered_hour(name, now),
                 paper_buys=self._paper_buys(st),
+                chart=self._chart_payload(st),
             )
             built["bot"]["feed_ages"] = metrics["feed_ages"]
             built["market"]["expired"] = bool((st.market or {}).get("expired")) or (
@@ -213,6 +231,8 @@ class Desk:
             )
             assets[name] = built
         rows = self.store.journal()
+        shadow = self.store.shadow_all()
+        paper_rows = shadow_rows_for_ui(shadow)
         strategies = []
         saved = self.store.settings()
         for sid, spec in self.cfg["strategies"].items():
@@ -239,7 +259,13 @@ class Desk:
             "strategies": strategies,
             "asset_order": list(self.assets),
             "assets": assets,
-            "journal": {"stats": journal_stats(rows), "rows": stamp_rows(rows)},
+            "journal": {
+                "stats": paper_journal_stats(shadow),
+                "stats_label": "paper",
+                "rows": paper_rows,
+                "legacy_rows": stamp_rows(rows),
+            },
+            "calibration": calibration(shadow),
             "scanner": stamp_rows(self.store.scans()),
             "paper_orders": stamp_rows(self.store.paper_orders()),
             "rules": self.cfg["suggest"],
@@ -270,8 +296,10 @@ class Desk:
                 bid = st.book.yes_bid if pos.side == "YES" else st.book.no_bid
                 if bid is not None:
                     pos.high_water = max(pos.high_water, bid)
+            self._append_chart_point(st, now, px)
             self._run_paper(st, now)
             self._maybe_scan(st, now)
+            self._maybe_shadow(st, now)
 
     def _load_paper_positions(self) -> None:
         for row in self.store.load_paper_open():
@@ -400,6 +428,7 @@ class Desk:
             position=st.book.position,
             already_entered_hour=self._already_entered_hour(st.name, now),
             paper_buys=paper_buys,
+            chart=self._chart_payload(st),
         )
 
     def _apply_market(self, st: AssetRT, market: dict | None, now: float) -> None:
@@ -413,7 +442,10 @@ class Desk:
                 self.store.add_journal(row)
                 if book.position and book.position.paper:
                     self.store.clear_paper_open(st.name)
+            self._settle_shadow(st, self._ref(st, now))
             st.book = new_book
+            st.chart_ticker = new_book.ticker
+            st.chart_points.clear()
             st.book.asset = st.name
         st.book.ticker = market["ticker"]
         st.book.asset = st.name
@@ -422,6 +454,116 @@ class Desk:
             if market.get(key) is not None:
                 setattr(st.book, key, market[key])
         st.market = market
+        if market and market.get("ticker") and market["ticker"] != st.chart_ticker:
+            st.chart_ticker = market["ticker"]
+            st.chart_points.clear()
+
+    def _append_chart_point(self, st: AssetRT, now: float, composite: float | None) -> None:
+        ticker = st.book.ticker or (st.market or {}).get("ticker")
+        if not ticker or composite is None:
+            return
+        if st.chart_ticker != ticker:
+            st.chart_ticker = ticker
+            st.chart_points.clear()
+        stale = float(self.cfg["feeds"]["stale_secs"])
+        cb = st.coinbase[0] if st.coinbase and now - st.coinbase[1] <= stale else None
+        kr = st.kraken[0] if st.kraken and now - st.kraken[1] <= stale else None
+        st.chart_points.append(
+            {
+                "t": now,
+                "c": composite,
+                "cb": cb,
+                "kr": kr,
+                "s": st.book.strike,
+            }
+        )
+        while len(st.chart_points) > 960:
+            st.chart_points.popleft()
+
+    def _chart_payload(self, st: AssetRT) -> dict:
+        market = st.market or {}
+        open_ts = market.get("open_ts")
+        close_ts = market.get("close_ts")
+        if not st.chart_points:
+            return {"ok": False}
+        points = []
+        for pt in st.chart_points:
+            rel = pt["t"] - open_ts if open_ts is not None else pt["t"]
+            points.append(
+                {
+                    "t": round(rel, 1),
+                    "c": pt["c"],
+                    "cb": pt["cb"],
+                    "kr": pt["kr"],
+                    "s": pt["s"],
+                }
+            )
+        last = st.chart_points[-1]
+        return {
+            "ok": True,
+            "open_ts": open_ts,
+            "close_ts": close_ts,
+            "grace_secs": float(self.cfg["suggest"]["entry_grace_secs"]),
+            "safeguard_secs": 60.0,
+            "strike": st.book.strike,
+            "points": points,
+            "current": {
+                "c": last["c"],
+                "cb": last["cb"],
+                "kr": last["kr"],
+                "s": last["s"],
+            },
+        }
+
+    def _maybe_shadow(self, st: AssetRT, now: float) -> None:
+        strategy = self._strategy()
+        if strategy.get("log_only"):
+            return
+        ticker = st.book.ticker
+        if not ticker or (st.market or {}).get("expired"):
+            return
+        view = self._preview(st, now, strategy)
+        strike = st.book.strike
+        for side in ("UP", "DOWN"):
+            if not should_log_shadow(side, view):
+                continue
+            edge, ask = side_edge_and_ask(view.get("market") or {}, view.get("bot") or {}, side)
+            gates = view.get("gates") or {}
+            self.store.shadow_try_insert(
+                {
+                    "ticker": ticker,
+                    "asset": st.name,
+                    "side": "YES" if side == "UP" else "NO",
+                    "entry_ts": now,
+                    "entry_ask": ask,
+                    "p_up": view.get("bot", {}).get("p_up"),
+                    "chop": view.get("chop", {}).get("score"),
+                    "strike": strike,
+                    "gates_json": json.dumps(
+                        {"passed": gates_passed_labels(gates.get(side) or []), "side": side, "edge": edge}
+                    ),
+                }
+            )
+
+    def _settle_shadow(self, st: AssetRT, ref: float | None) -> None:
+        ticker = st.book.ticker or (st.market or {}).get("ticker")
+        if not ticker:
+            return
+        strike = st.book.strike
+        rate = float(self.cfg["fees"]["taker_rate"])
+        for row in self.store.shadow_unsettled(ticker):
+            settled = settle_shadow_row(dict(row), ref, strike, rate)
+            self.store.shadow_settle_row(
+                row["id"],
+                {
+                    "settle_composite": settled.get("settle_composite"),
+                    "up_won": settled.get("up_won"),
+                    "right": settled.get("right"),
+                    "exit_px": settled.get("exit_px"),
+                    "net_pnl": settled.get("net_pnl"),
+                    "settle_note": settled.get("settle_note"),
+                },
+            )
 
     def _expire(self, st: AssetRT, now: float) -> None:
         close_ts = (st.market or {}).get("close_ts")
@@ -429,7 +571,9 @@ class Desk:
             return
         pos = st.book.position
         if pos and pos.ticker == (st.book.ticker or st.market.get("ticker")):
-            row = _auto_settle(pos, st.book.strike, self._ref(st, now))
+            ref = self._ref(st, now)
+            self._settle_shadow(st, ref)
+            row = _auto_settle(pos, st.book.strike, ref)
             row["ts"] = now
             self.store.add_journal(row)
             if pos.paper:
