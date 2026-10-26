@@ -522,7 +522,20 @@ function renderTrade(view) {
   const staleNote = stale.map((name) => name + " " + Number(ages[name]).toFixed(0) + "s old").join(", ");
   box.appendChild(line("Composite", spot(bot.composite) + " · " + fresh + (bot.single_feed ? " · single feed" : "") + (staleNote ? " · " + staleNote : "")));
   box.appendChild(line("Kalshi index", spot(bot.index)));
-  box.appendChild(line("Lag", lagText(bot.lag)));
+  const lagRow = line("Lag", lagText(bot.lag));
+  const poll = bot.lag_poll;
+  if (poll) {
+    const tag = document.createElement("span");
+    tag.className = poll.ready ? "profit" : "wait";
+    const side = poll.side || "—";
+    tag.textContent = poll.aligned
+      ? side + " " + poll.held_secs + "/" + poll.required_secs + "s"
+      : "need " + poll.required_secs + "s " + side + " side";
+    tag.style.marginLeft = "8px";
+    tag.style.fontSize = "11px";
+    lagRow.lastChild.appendChild(tag);
+  }
+  box.appendChild(lagRow);
   const mom = bot.momentum == null ? "unknown" : bot.momentum > 0 ? "up" : bot.momentum < 0 ? "down" : "flat";
   box.appendChild(line("1m move", bot.move_1m == null ? "—" : "$" + Number(bot.move_1m).toFixed(2)));
   box.appendChild(line("Vol vs baseline", bot.vol_ratio == null ? "—" : Number(bot.vol_ratio).toFixed(2) + "×"));
@@ -567,7 +580,19 @@ function renderTrade(view) {
   const age = document.createElement("span");
   age.className = "muted";
   age.textContent = bot.composite_age == null ? "composite —" : "composite " + Number(bot.composite_age).toFixed(1) + "s";
-  cmp.append(leftL, lagL, age);
+  const lagPoll = document.createElement("span");
+  lagPoll.className = "muted";
+  const lp = bot.lag_poll;
+  if (lp) {
+    lagPoll.className = lp.ready ? "profit" : "wait";
+    lagPoll.style.marginLeft = "auto";
+    lagPoll.textContent = lp.aligned
+      ? "lag poll " + lp.held_secs + "/" + lp.required_secs + "s"
+      : "lag poll …/" + lp.required_secs + "s";
+  } else {
+    lagPoll.textContent = "";
+  }
+  cmp.append(leftL, lagL, age, lagPoll);
   box.appendChild(cmp);
 }
 

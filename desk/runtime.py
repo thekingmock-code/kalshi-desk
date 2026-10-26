@@ -15,7 +15,7 @@ from kalshi_auth import load_private_key_from_env
 from desk.engine.load import load_config
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
-from desk.engine.paper import can_paper_enter, paper_buy, side_to_yes
+from desk.engine.paper import can_paper_enter, lag_on_right_side, paper_buy, favored_side, side_to_yes
 from desk.engine.shadow import (
     calibration,
     gates_passed_labels,
@@ -52,6 +52,8 @@ class AssetRT:
     market: dict = field(default_factory=dict)
     scan_at: dict = field(default_factory=dict)
     last_paper_entry: float = 0.0
+    lag_poll_since: float | None = None
+    lag_poll_side: str | None = None
     chart_ticker: str | None = None
     chart_points: deque = field(default_factory=deque)
 
@@ -151,6 +153,32 @@ class Desk:
                     print(f"Kalshi market {st.name}: {exc.__class__.__name__}")
             await asyncio.sleep(2)
 
+    def _lag_poll_state(self, st: AssetRT, now: float, side: str | None, lag: float | None) -> dict:
+        paper = self.cfg.get("paper") or {}
+        required = float(paper.get("lag_align_secs", 3))
+        if not side or not lag_on_right_side(side, lag):
+            st.lag_poll_side = None
+            st.lag_poll_since = None
+            return {
+                "required_secs": required,
+                "side": side,
+                "aligned": False,
+                "held_secs": 0.0,
+                "ready": False,
+            }
+        if st.lag_poll_side != side:
+            st.lag_poll_side = side
+            st.lag_poll_since = now
+        since = st.lag_poll_since if st.lag_poll_since is not None else now
+        held = max(0.0, now - since)
+        return {
+            "required_secs": required,
+            "side": side,
+            "aligned": True,
+            "held_secs": round(held, 1),
+            "ready": held >= required,
+        }
+
     async def _poll_private(self) -> None:
         assert self._creds
         key_id, private_key = self._creds
@@ -178,7 +206,8 @@ class Desk:
                 self.authed = False
                 self.auth_note = "Kalshi auth failed · positions unavailable · observe only"
                 print(f"Kalshi private read: {exc.__class__.__name__}")
-            await asyncio.sleep(2)
+            poll = float(self.cfg.get("feeds", {}).get("index_poll_secs", 3))
+            await asyncio.sleep(poll)
 
     async def _tick(self) -> None:
         while not self._stop.is_set():
@@ -373,7 +402,14 @@ class Desk:
                 buys = self._paper_buys(st)
                 other = "DOWN" if old == "YES" else "UP"
                 view = self._preview(st, now, strategy, buys)
-                if buys < max_e and cooldown_ok and all_pass((view.get("gates") or {}).get(other) or []):
+                lag = view.get("bot", {}).get("lag")
+                lag_ready = self._lag_poll_state(st, now, other, lag)["ready"]
+                if (
+                    buys < max_e
+                    and cooldown_ok
+                    and all_pass((view.get("gates") or {}).get(other) or [])
+                    and lag_ready
+                ):
                     paper_buy(st=st, view=view, side=other, now=now, cfg=self.cfg, store=self.store, taker_rate=rate)
                     st.last_paper_entry = now
                 return
@@ -387,6 +423,10 @@ class Desk:
             has_live_position=has_live,
         )
         if not ok:
+            return
+        lag = view.get("bot", {}).get("lag")
+        side_lag = self._lag_poll_state(st, now, detail, lag)
+        if (self.cfg.get("paper") or {}).get("require_lag_side", True) and not side_lag["ready"]:
             return
         if pos and pos.paper and pos.ticker == ticker and side_to_yes(detail) != pos.side:
             return
@@ -432,7 +472,7 @@ class Desk:
         metrics = self._metrics(st, now)
         if paper_buys is None:
             paper_buys = self._paper_buys(st)
-        return build_asset(
+        view = build_asset(
             asset=st.name,
             now=now,
             cfg=self.cfg,
@@ -452,6 +492,9 @@ class Desk:
             paper_buys=paper_buys,
             chart=self._chart_payload(st),
         )
+        fav, _ = favored_side(view.get("bot") or {})
+        view["bot"]["lag_poll"] = self._lag_poll_state(st, now, fav, view["bot"].get("lag"))
+        return view
 
     def _apply_market(self, st: AssetRT, market: dict | None, now: float) -> None:
         if not market:
@@ -468,6 +511,8 @@ class Desk:
             st.book = new_book
             st.chart_ticker = new_book.ticker
             st.chart_points.clear()
+            st.lag_poll_since = None
+            st.lag_poll_side = None
             st.book.asset = st.name
         st.book.ticker = market["ticker"]
         st.book.asset = st.name

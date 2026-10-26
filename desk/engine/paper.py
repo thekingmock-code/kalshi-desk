@@ -19,6 +19,17 @@ def side_to_yes(side: str) -> str:
     return "YES" if side == "UP" else "NO"
 
 
+def lag_on_right_side(side: str, lag: float | None) -> bool:
+    """UP needs composite above index (lag>0); DOWN needs lag<0."""
+    if lag is None:
+        return False
+    if side == "UP":
+        return lag > 0
+    if side == "DOWN":
+        return lag < 0
+    return False
+
+
 def ask_for_side(market: dict, side: str) -> float | None:
     return market.get("yes_ask") if side == "UP" else market.get("no_ask")
 

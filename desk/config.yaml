@@ -18,6 +18,7 @@ assets:
     index: SOLUSD_RTI
 
 feeds:
+  index_poll_secs: 3
   stale_secs: 5
   vol_window_secs: 300
   baseline_window_secs: 1800
@@ -55,11 +56,13 @@ chop:
 
 paper:
   enabled: true
-  max_entries_per_market: 2
+  max_entries_per_market: 1
   contracts: 1
   entry_cooldown_secs: 30
   require_gates: true
   require_positive_edge: true
+  require_lag_side: true
+  lag_align_secs: 3
 
 suggest:
   exit_loss_frac: 0.42
