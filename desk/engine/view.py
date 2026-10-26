@@ -273,38 +273,60 @@ def _tone(action: str, pnl: float | None) -> str:
 
 
 def paper_journal_stats(rows: list[dict]) -> dict:
-    settled = [r for r in rows if r.get("settled")]
+    settled = [r for r in rows if r.get("settled") and r.get("right") is not None]
     return journal_stats(
         [
             {
                 "net_pnl": r.get("net_pnl"),
                 "chop": r.get("chop"),
                 "mode": "paper",
+                "right": bool(r.get("right")),
             }
             for r in settled
         ]
     )
 
 
+def _shadow_direction(side: str | None) -> str | None:
+    if side == "YES":
+        return "UP"
+    if side == "NO":
+        return "DOWN"
+    return None
+
+
 def shadow_rows_for_ui(rows: list[dict]) -> list[dict]:
     out = []
     for r in rows:
+        scored = bool(r.get("settled")) and r.get("right") is not None
+        pick = _shadow_direction(r.get("side"))
+        outcome = None
+        if scored and r.get("up_won") is not None:
+            outcome = "UP" if int(r["up_won"]) else "DOWN"
+        dir_ok = None
+        if scored and pick and outcome:
+            dir_ok = pick == outcome
         item = {
             "ts": r.get("entry_ts"),
             "asset": r.get("asset"),
             "side": r.get("side"),
+            "direction": pick,
+            "outcome": outcome,
+            "dir_ok": dir_ok,
             "entry": r.get("entry_ask"),
             "exit_px": r.get("exit_px"),
             "contracts": 1,
             "net_pnl": r.get("net_pnl"),
-            "right": None if not r.get("settled") else bool(r.get("right")),
+            "right": None if not scored else bool(r.get("right")),
             "mode": "paper",
             "chop": r.get("chop"),
             "p_up": r.get("p_up"),
             "strike": r.get("strike"),
+            "settle_px": r.get("settle_composite"),
             "ticker": r.get("ticker"),
-            "pending": not r.get("settled"),
+            "pending": not scored,
             "gates": r.get("gates_json"),
+            "settle_note": r.get("settle_note"),
         }
         if item["ts"]:
             item["et"] = et_stamp(float(item["ts"]))
@@ -313,10 +335,15 @@ def shadow_rows_for_ui(rows: list[dict]) -> list[dict]:
 
 
 def journal_stats(rows: list[dict]) -> dict:
+    def won(r: dict) -> bool:
+        if r.get("right") is not None:
+            return bool(r["right"])
+        return (r.get("net_pnl") or 0) > 0
+
     def wr(subset: list[dict]) -> float | None:
         if not subset:
             return None
-        wins = sum(1 for r in subset if (r.get("net_pnl") or 0) > 0)
+        wins = sum(1 for r in subset if won(r))
         return wins / len(subset)
 
     closed = [r for r in rows if r.get("mode") not in ("log",)]

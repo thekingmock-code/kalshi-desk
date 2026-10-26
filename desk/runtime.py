@@ -62,6 +62,9 @@ class Desk:
     def __init__(self, store_path: Path | None = None):
         self.cfg = load_config()
         self.store = Store(store_path or ROOT / "desk.sqlite")
+        purged = self.store.shadow_reset_invalid_settlements()
+        if purged:
+            print(f"Shadow journal: removed {purged} row(s) that lacked settlement scores")
         self.assets = {name: AssetRT(name, meta) for name, meta in self.cfg["assets"].items()}
         self.listeners: list[asyncio.Queue] = []
         self.authed = False
@@ -440,9 +443,9 @@ class Desk:
             if row:
                 row["ts"] = now
                 self.store.add_journal(row)
-                if book.position and book.position.paper:
+                if st.book.position and st.book.position.paper:
                     self.store.clear_paper_open(st.name)
-            self._settle_shadow(st, self._ref(st, now))
+            self._settle_shadow(st, self._settlement_ref(st, now))
             st.book = new_book
             st.chart_ticker = new_book.ticker
             st.chart_points.clear()
@@ -545,13 +548,22 @@ class Desk:
                 }
             )
 
+    def _settlement_ref(self, st: AssetRT, now: float) -> float | None:
+        ref = self._ref(st, now)
+        if ref is not None:
+            return ref
+        if st.samples:
+            return st.samples[-1][1]
+        return None
+
     def _settle_shadow(self, st: AssetRT, ref: float | None) -> None:
         ticker = st.book.ticker or (st.market or {}).get("ticker")
         if not ticker:
             return
-        strike = st.book.strike
+        book_strike = st.book.strike
         rate = float(self.cfg["fees"]["taker_rate"])
         for row in self.store.shadow_unsettled(ticker):
+            strike = book_strike if book_strike is not None else row.get("strike")
             settled = settle_shadow_row(dict(row), ref, strike, rate)
             self.store.shadow_settle_row(
                 row["id"],
@@ -569,10 +581,10 @@ class Desk:
         close_ts = (st.market or {}).get("close_ts")
         if close_ts is None or now < close_ts:
             return
+        ref = self._settlement_ref(st, now)
+        self._settle_shadow(st, ref)
         pos = st.book.position
         if pos and pos.ticker == (st.book.ticker or st.market.get("ticker")):
-            ref = self._ref(st, now)
-            self._settle_shadow(st, ref)
             row = _auto_settle(pos, st.book.strike, ref)
             row["ts"] = now
             self.store.add_journal(row)

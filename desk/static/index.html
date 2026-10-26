@@ -221,8 +221,8 @@
         <table>
           <thead>
             <tr>
-              <th>Time ET</th><th>Asset</th><th>Side</th><th>Entry</th><th>Exit</th>
-              <th>P(up)</th><th>Strike</th><th>Net P&amp;L</th><th>Result</th><th>Chop</th>
+              <th>Time ET</th><th>Asset</th><th>Pick</th><th>Outcome</th><th>Entry</th><th>Exit</th>
+              <th>P(up)</th><th>Net P&amp;L</th><th>Result</th><th>Dir OK</th>
             </tr>
           </thead>
           <tbody id="jbody"></tbody>
@@ -758,23 +758,26 @@ function renderJournal(state) {
     const tr = document.createElement("tr");
     let result = "OPEN";
     if (!row.pending) result = row.right ? "WIN" : "LOSS";
+    let dirOk = "—";
+    if (!row.pending && row.dir_ok != null) dirOk = row.dir_ok ? "YES" : "NO";
     const cells = [
       row.et || "—",
       row.asset || "—",
-      row.side || "—",
+      row.direction || row.side || "—",
+      row.pending ? "—" : (row.outcome || "—"),
       cents(row.entry),
       row.pending ? "—" : cents(row.exit_px),
       row.p_up == null ? "—" : Math.round(row.p_up * 100) + "%",
-      row.strike == null ? "—" : spot(row.strike),
       row.pending ? "—" : signedMoney(row.net_pnl),
       result,
-      row.chop == null ? "—" : Number(row.chop).toFixed(0)
+      dirOk
     ];
     cells.forEach((text, i) => {
       const td = document.createElement("td");
       td.textContent = text;
       if (i === 7) td.className = row.pending ? "wait" : pnlClass(row.net_pnl);
       if (i === 8) td.className = row.pending ? "wait" : row.right ? "profit" : "loss";
+      if (i === 9) td.className = row.pending ? "wait" : row.dir_ok ? "profit" : "loss";
       tr.appendChild(td);
     });
     body.appendChild(tr);

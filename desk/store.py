@@ -184,7 +184,10 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def shadow_settle_row(self, row_id: int, updates: dict) -> None:
+    def shadow_settle_row(self, row_id: int, updates: dict) -> bool:
+        """Apply settlement. Returns False if outcome missing (row stays open for retry)."""
+        if updates.get("right") is None or updates.get("net_pnl") is None:
+            return False
         self.conn.execute(
             """
             UPDATE shadow_paper SET
@@ -208,6 +211,18 @@ class Store:
             ),
         )
         self.conn.commit()
+        return True
+
+    def shadow_reset_invalid_settlements(self) -> int:
+        """Drop rows that were marked settled without a scored outcome (unrecoverable)."""
+        cur = self.conn.execute(
+            """
+            DELETE FROM shadow_paper
+            WHERE settled = 1 AND right IS NULL AND net_pnl IS NULL
+            """
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def shadow_all(self, limit: int = 120) -> list[dict]:
         rows = self.conn.execute(

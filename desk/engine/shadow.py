@@ -23,8 +23,10 @@ def should_log_shadow(side: str, view: dict) -> bool:
 
 def settle_shadow_row(row: dict, settle_px: float | None, strike: float | None, taker_rate: float) -> dict:
     """Mark WIN/LOSS from composite vs strike at window end."""
+    if strike is None:
+        strike = row.get("strike")
     if settle_px is None or strike is None or row.get("entry_ask") is None:
-        return {**row, "settled": 1, "settle_note": "missing settle price"}
+        return {**row, "settled": 0, "settle_note": "missing settle price"}
     up_won = settle_px >= strike
     side = row["side"]
     win = (side == "YES" and up_won) or (side == "NO" and not up_won)
