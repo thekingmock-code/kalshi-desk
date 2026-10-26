@@ -15,6 +15,7 @@ class Position:
     chop: float | None
     fees: float
     high_water: float
+    paper: bool = False
 
 
 @dataclass
@@ -72,7 +73,7 @@ def _auto_settle(pos: Position, strike: float | None, ref: float | None) -> dict
         "contracts": pos.contracts,
         "net_pnl": pnl,
         "right": right,
-        "mode": "auto-settled",
+        "mode": "paper-settled" if pos.paper else "auto-settled",
         "chop": pos.chop,
         "entry_ts": pos.entry_ts,
     }

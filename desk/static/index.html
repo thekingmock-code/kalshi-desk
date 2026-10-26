@@ -205,7 +205,7 @@
       <div id="scans"></div>
       <div class="actions"><button id="clear" class="danger" type="button">Clear journal</button></div>
     </section>
-    <p class="foot">Observe only. This desk never places an order. 15-minute BTC edge after fees looks thin in public data, so read the journal before trusting a signal. Composite lead, BNB, and the chop weights are unverified.</p>
+    <p class="foot" id="foot">Paper mode fills at live ask/bid with real fees — max two entries per 15m market, no Kalshi orders sent. 15-minute BTC edge after fees looks thin in public data; validate in the journal. Composite lead, BNB, and chop weights are unverified.</p>
   </main>
 </div>
 <script>
@@ -288,6 +288,12 @@ function render(state) {
   note.hidden = !state.auth_note;
   note.textContent = state.auth_note || "";
   renderTabs(state);
+  const foot = document.getElementById("foot");
+  if (foot) {
+    foot.textContent = state.observe_only
+      ? "Observe only. No paper and no real orders. Edge after fees is often thin — validate in the journal."
+      : "Paper trading: simulated fills at live ask/bid with real fees. Max " + (state.paper?.max_entries_per_market || 2) + " entries per 15m market. No Kalshi orders are sent.";
+  }
   const view = state.assets[asset];
   renderTrade(view);
   renderSuggestion(view);
@@ -373,6 +379,9 @@ function renderTrade(view) {
     banner.classList.add("loss");
   }
   box.appendChild(banner);
+  if (trade.paper) {
+    box.appendChild(line("Mode", "PAPER · entries " + (trade.paper_entries_used ?? 0) + "/" + (trade.paper_entries_max ?? 2) + " this market"));
+  }
   if (!trade.flat) {
     box.appendChild(line("Side", trade.side === "YES" ? "YES · UP" : "NO · DOWN"));
     box.appendChild(line("Entry", cents(trade.entry)));

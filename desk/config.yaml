@@ -53,6 +53,14 @@ chop:
   real_min: 70
   mixed_min: 40
 
+paper:
+  enabled: true
+  max_entries_per_market: 2
+  contracts: 1
+  entry_cooldown_secs: 30
+  require_gates: true
+  require_positive_edge: true
+
 suggest:
   exit_loss_frac: 0.42
   bank_price: 0.95

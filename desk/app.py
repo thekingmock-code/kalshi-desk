@@ -39,7 +39,8 @@ async def index():
 
 @app.get("/api/health")
 async def health():
-    return {"ok": True, "authed": desk.authed, "observe_only": True}
+    paper = desk.cfg.get("paper") or {}
+    return {"ok": True, "authed": desk.authed, "observe_only": not bool(paper.get("enabled")), "paper": paper}
 
 
 @app.get("/api/state")

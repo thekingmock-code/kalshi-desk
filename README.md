@@ -1,6 +1,6 @@
 # Kalshi 15m trade desk
 
-Read-only desk for Kalshi 15-minute crypto markets: **BTC, BNB, and SOL**. It watches Coinbase, Kraken, and the public Kalshi book, then suggests **HOLD**, **REVERSE**, **WAIT**, or **EXIT NOW**. It does not place orders.
+Desk for Kalshi 15-minute crypto markets: **BTC, BNB, and SOL**. It watches Coinbase, Kraken, and the public Kalshi book, suggests **HOLD**, **REVERSE**, **WAIT**, **ENTER** (paper), or **EXIT NOW**, and **paper-trades** at live ask/bid with real fee math. It never sends orders to Kalshi.
 
 A phone-width page shows sticky asset tabs, the open trade, a chop-versus-real score, strategy gates, and an Eastern-time journal. Thresholds live in `desk/config.yaml`.
 
@@ -47,5 +47,9 @@ desk/static/index.html the page
 ```
 
 The journal file is `desk/desk.sqlite` and is gitignored. Clear journal asks for a second tap.
+
+### Paper trading
+
+With `paper.enabled: true` in `desk/config.yaml` (default), the engine simulates taker **buys at the live ask** when the active strategy’s gates all pass on the favored side (positive edge required). It **exits at the bid** on the same rules as live suggestions. **At most two buy fills per 15m market ticker**, with a cooldown between entries. Rows are stored in the journal as `paper-closed` / `paper-settled` and in the `paper_orders` table. Turn off with `paper.enabled: false` for observe-only mode.
 
 `scanner.py` is the older CSV edge logger. The Next.js chart in this repo is a separate signals view; this desk is the one-page trade screen.

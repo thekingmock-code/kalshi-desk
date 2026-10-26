@@ -22,6 +22,10 @@ class SuggestCtx:
     favored_edge: float | None = None
     gates_pass: bool = False
     flat_reason: str = ""
+    paper_enabled: bool = False
+    paper_maxed: bool = False
+    paper_entries_used: int = 0
+    paper_entries_max: int = 2
 
 
 def decide(ctx: SuggestCtx, rules: dict, strategy: dict | None = None) -> tuple[str, list[str]]:
@@ -35,7 +39,15 @@ def decide(ctx: SuggestCtx, rules: dict, strategy: dict | None = None) -> tuple[
             reasons.append(f"model favors {ctx.favored} · edge {edge} · {gate}")
         if strategy and strategy.get("log_only"):
             reasons.append("scanner is log only")
-        reasons.append("observe only · no order")
+        if ctx.paper_enabled:
+            reasons.append(f"paper entries {ctx.paper_entries_used}/{ctx.paper_entries_max} this market")
+            if ctx.gates_pass and not ctx.paper_maxed:
+                reasons.append("paper · fill at live ask when cooldown clears")
+                return "ENTER", reasons
+            if ctx.paper_maxed:
+                reasons.append("paper · entry cap reached for this market")
+        else:
+            reasons.append("observe only · no order")
         return "WAIT", reasons
 
     loss_at = float(rules["exit_loss_frac"])

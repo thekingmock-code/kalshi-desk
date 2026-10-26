@@ -47,6 +47,34 @@ class Store:
                 fill_id TEXT PRIMARY KEY,
                 ts REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS paper_buys (
+                ticker TEXT PRIMARY KEY,
+                count INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS paper_open (
+                asset TEXT PRIMARY KEY,
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL,
+                contracts REAL NOT NULL,
+                entry REAL,
+                entry_ts REAL NOT NULL,
+                chop REAL,
+                fees REAL NOT NULL,
+                high_water REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS paper_orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL,
+                action TEXT NOT NULL,
+                price REAL,
+                contracts REAL,
+                fee REAL,
+                edge REAL,
+                chop REAL
+            );
             """
         )
         self.conn.commit()
@@ -98,6 +126,81 @@ class Store:
     def clear_journal(self) -> None:
         self.conn.execute("DELETE FROM journal")
         self.conn.execute("DELETE FROM scanner")
+        self.conn.execute("DELETE FROM paper_buys")
+        self.conn.execute("DELETE FROM paper_orders")
+        self.conn.execute("DELETE FROM paper_open")
+        self.conn.commit()
+
+    def paper_buy_count(self, ticker: str) -> int:
+        row = self.conn.execute("SELECT count FROM paper_buys WHERE ticker = ?", (ticker,)).fetchone()
+        return int(row["count"]) if row else 0
+
+    def record_paper_buy(self, ticker: str) -> None:
+        n = self.paper_buy_count(ticker) + 1
+        self.conn.execute(
+            "INSERT INTO paper_buys (ticker, count) VALUES (?, ?) ON CONFLICT(ticker) DO UPDATE SET count = excluded.count",
+            (ticker, n),
+        )
+        self.conn.commit()
+
+    def add_paper_order(self, **row) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO paper_orders (ts, asset, ticker, side, action, price, contracts, fee, edge, chop)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.get("ts", time.time()),
+                row["asset"],
+                row["ticker"],
+                row["side"],
+                row["action"],
+                row.get("price"),
+                row.get("contracts"),
+                row.get("fee"),
+                row.get("edge"),
+                row.get("chop"),
+            ),
+        )
+        self.conn.commit()
+
+    def paper_orders(self, limit: int = 40) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM paper_orders ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def save_paper_open(self, asset: str, pos) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO paper_open (asset, ticker, side, contracts, entry, entry_ts, chop, fees, high_water)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(asset) DO UPDATE SET
+              ticker=excluded.ticker, side=excluded.side, contracts=excluded.contracts,
+              entry=excluded.entry, entry_ts=excluded.entry_ts, chop=excluded.chop,
+              fees=excluded.fees, high_water=excluded.high_water
+            """,
+            (
+                asset,
+                pos.ticker,
+                pos.side,
+                pos.contracts,
+                pos.entry,
+                pos.entry_ts,
+                pos.chop,
+                pos.fees,
+                pos.high_water,
+            ),
+        )
+        self.conn.commit()
+
+    def load_paper_open(self) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM paper_open").fetchall()
+        return [dict(r) for r in rows]
+
+    def clear_paper_open(self, asset: str) -> None:
+        self.conn.execute("DELETE FROM paper_open WHERE asset = ?", (asset,))
         self.conn.commit()
 
     def add_scan(self, asset: str, side: str, ask: float | None, edge: float | None) -> None:

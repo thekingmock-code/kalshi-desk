@@ -36,6 +36,7 @@ def build_asset(
     crossings: int,
     position: Position | None,
     already_entered_hour: bool,
+    paper_buys: int = 0,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -96,8 +97,8 @@ def build_asset(
         favored, favored_edge = None, None
     favored_pass = all_pass(gates[favored]) if favored else False
 
-    trade = _trade(position, market, ref, strike, secs_left, lag, composite_age, rate, now)
-    ctx = _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now)
+    trade = _trade(position, market, ref, strike, secs_left, lag, composite_age, rate, now, paper_buys, cfg)
+    ctx = _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now, cfg, paper_buys)
     action, reasons = decide(ctx, cfg["suggest"], strategy)
     tone = _tone(action, trade.get("pnl"))
     tab_pos = "FLAT"
@@ -149,13 +150,18 @@ def build_asset(
     }
 
 
-def _trade(position, market, ref, strike, secs_left, lag, age, rate, now) -> dict:
+def _trade(position, market, ref, strike, secs_left, lag, age, rate, now, paper_buys: int, cfg: dict) -> dict:
+    paper_cfg = cfg.get("paper") or {}
+    max_e = int(paper_cfg.get("max_entries_per_market", 2))
     if position is None or position.ticker != market.get("ticker"):
         return {
             "flat": True,
             "secs_left": secs_left,
             "lag": lag,
             "composite_age": age,
+            "paper": False,
+            "paper_entries_used": paper_buys,
+            "paper_entries_max": max_e,
         }
     bid = market.get("yes_bid") if position.side == "YES" else market.get("no_bid")
     entry_fee = position.fees
@@ -187,10 +193,16 @@ def _trade(position, market, ref, strike, secs_left, lag, age, rate, now) -> dic
         "composite_age": age,
         "held_for": now - position.entry_ts,
         "high_water": position.high_water,
+        "paper": bool(position.paper),
+        "paper_entries_used": paper_buys,
+        "paper_entries_max": max_e,
     }
 
 
-def _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now) -> SuggestCtx:
+def _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now, cfg, paper_buys) -> SuggestCtx:
+    paper_cfg = cfg.get("paper") or {}
+    enabled = bool(paper_cfg.get("enabled"))
+    max_e = int(paper_cfg.get("max_entries_per_market", 2))
     if trade.get("flat"):
         reason = "no open 15m market" if not market.get("ticker") else "flat"
         return SuggestCtx(
@@ -199,6 +211,10 @@ def _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favore
             favored_edge=favored_edge,
             gates_pass=favored_pass,
             flat_reason=reason,
+            paper_enabled=enabled,
+            paper_maxed=paper_buys >= max_e,
+            paper_entries_used=paper_buys,
+            paper_entries_max=max_e,
         )
     cost = trade["cost"] or 0
     pnl = trade["pnl"]
@@ -228,6 +244,8 @@ def _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favore
 
 
 def _tone(action: str, pnl: float | None) -> str:
+    if action == "ENTER":
+        return "profit"
     if action == "REVERSE":
         return "reverse"
     if action == "WAIT":
@@ -250,7 +268,7 @@ def journal_stats(rows: list[dict]) -> dict:
         wins = sum(1 for r in subset if (r.get("net_pnl") or 0) > 0)
         return wins / len(subset)
 
-    closed = [r for r in rows if r.get("mode") != "log"]
+    closed = [r for r in rows if r.get("mode") not in ("log",)]
     hi = [r for r in closed if r.get("chop") is not None and r["chop"] >= 70]
     lo = [r for r in closed if r.get("chop") is not None and r["chop"] < 40]
     net = sum((r.get("net_pnl") or 0) for r in closed)

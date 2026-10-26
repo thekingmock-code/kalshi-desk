@@ -1,4 +1,4 @@
-"""One-second desk loop. Reads markets and prints. Never places an order."""
+"""One-second desk loop. Paper trades at live quotes; never sends Kalshi orders."""
 from __future__ import annotations
 
 import asyncio
@@ -12,8 +12,9 @@ from pathlib import Path
 from kalshi_auth import load_private_key_from_env
 
 from desk.engine.load import load_config
-from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns
+from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
+from desk.engine.paper import can_paper_enter, paper_buy, side_to_yes
 from desk.engine.strategies import all_pass
 from desk.engine.view import build_asset, et_stamp, journal_stats, stamp_rows
 from desk.feeds import coinbase, kalshi, kraken
@@ -34,6 +35,7 @@ class AssetRT:
     book: Book = field(default_factory=Book)
     market: dict = field(default_factory=dict)
     scan_at: dict = field(default_factory=dict)
+    last_paper_entry: float = 0.0
 
     def __post_init__(self) -> None:
         self.book.asset = self.name
@@ -46,20 +48,28 @@ class Desk:
         self.assets = {name: AssetRT(name, meta) for name, meta in self.cfg["assets"].items()}
         self.listeners: list[asyncio.Queue] = []
         self.authed = False
-        self.auth_note = "Kalshi key not set · positions unavailable · observe only"
+        paper_on = bool((self.cfg.get("paper") or {}).get("enabled"))
+        self.auth_note = None
+        if paper_on:
+            self.auth_note = "Paper trading on live bid/ask · no real Kalshi orders"
         self._creds: tuple | None = None
+        self._load_paper_positions()
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self._seeded = False
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
+        paper_on = bool((self.cfg.get("paper") or {}).get("enabled"))
         key_id, private_key = load_private_key_from_env()
         self._creds = (key_id, private_key) if key_id and private_key else None
         if self._creds:
             self.authed = True
-            self.auth_note = None
-        else:
+            if paper_on:
+                self.auth_note = "Paper trading · live Kalshi positions synced when keyed"
+            else:
+                self.auth_note = None
+        elif self.auth_note:
             print(self.auth_note)
         products = {name: st.meta["coinbase"] for name, st in self.assets.items()}
         symbols = {name: st.meta["kraken"] for name, st in self.assets.items()}
@@ -136,7 +146,10 @@ class Desk:
                             self.assets[name].index = (price, now)
                     self._apply_account(positions, fills, now)
                     self.authed = True
-                    self.auth_note = None
+                    if bool((self.cfg.get("paper") or {}).get("enabled")):
+                        self.auth_note = "Paper trading · live Kalshi positions synced when keyed"
+                    else:
+                        self.auth_note = None
             except Exception as exc:
                 self.authed = False
                 self.auth_note = "Kalshi auth failed · positions unavailable · observe only"
@@ -192,6 +205,7 @@ class Desk:
                 crossings=metrics["crossings"],
                 position=st.book.position,
                 already_entered_hour=self._already_entered_hour(name, now),
+                paper_buys=self._paper_buys(st),
             )
             built["bot"]["feed_ages"] = metrics["feed_ages"]
             built["market"]["expired"] = bool((st.market or {}).get("expired")) or (
@@ -219,13 +233,15 @@ class Desk:
             "et": et_stamp(now),
             "authed": self.authed,
             "auth_note": self.auth_note,
-            "observe_only": True,
+            "observe_only": not bool((self.cfg.get("paper") or {}).get("enabled")),
+            "paper": self.cfg.get("paper") or {},
             "active": strategy["id"],
             "strategies": strategies,
             "asset_order": list(self.assets),
             "assets": assets,
             "journal": {"stats": journal_stats(rows), "rows": stamp_rows(rows)},
             "scanner": stamp_rows(self.store.scans()),
+            "paper_orders": stamp_rows(self.store.paper_orders()),
             "rules": self.cfg["suggest"],
         }
 
@@ -254,7 +270,97 @@ class Desk:
                 bid = st.book.yes_bid if pos.side == "YES" else st.book.no_bid
                 if bid is not None:
                     pos.high_water = max(pos.high_water, bid)
+            self._run_paper(st, now)
             self._maybe_scan(st, now)
+
+    def _load_paper_positions(self) -> None:
+        for row in self.store.load_paper_open():
+            st = self.assets.get(row["asset"])
+            if not st:
+                continue
+            st.book.position = Position(
+                asset=row["asset"],
+                ticker=row["ticker"],
+                side=row["side"],
+                contracts=float(row["contracts"]),
+                entry=row["entry"],
+                entry_ts=float(row["entry_ts"]),
+                chop=row["chop"],
+                fees=float(row["fees"] or 0),
+                high_water=float(row["high_water"] or 0),
+                paper=True,
+            )
+
+    def _paper_buys(self, st: AssetRT) -> int:
+        ticker = st.book.ticker or (st.market or {}).get("ticker") or ""
+        return self.store.paper_buy_count(ticker) if ticker else 0
+
+    def _run_paper(self, st: AssetRT, now: float) -> None:
+        if not (self.cfg.get("paper") or {}).get("enabled"):
+            return
+        strategy = self._strategy()
+        ticker = st.book.ticker or ""
+        if not ticker:
+            return
+        buys = self._paper_buys(st)
+        view = self._preview(st, now, strategy, buys)
+        view["_strategy"] = strategy
+        pos = st.book.position
+        rate = float(self.cfg["fees"]["taker_rate"])
+        paper_cfg = self.cfg.get("paper") or {}
+        max_e = int(paper_cfg.get("max_entries_per_market", 2))
+        cooldown = float(paper_cfg.get("entry_cooldown_secs", 30))
+        cooldown_ok = now - st.last_paper_entry >= cooldown
+
+        if pos and pos.paper and pos.ticker == ticker:
+            action = view["suggestion"]["action"]
+            if action == "EXIT NOW":
+                self._paper_close(st, pos, now, rate)
+                return
+            if action == "REVERSE":
+                old = pos.side
+                self._paper_close(st, pos, now, rate)
+                buys = self._paper_buys(st)
+                other = "DOWN" if old == "YES" else "UP"
+                view = self._preview(st, now, strategy, buys)
+                if buys < max_e and cooldown_ok and all_pass((view.get("gates") or {}).get(other) or []):
+                    paper_buy(st=st, view=view, side=other, now=now, cfg=self.cfg, store=self.store, taker_rate=rate)
+                    st.last_paper_entry = now
+                return
+
+        has_live = pos is not None and not pos.paper
+        ok, detail = can_paper_enter(
+            view,
+            cfg=self.cfg,
+            buys_so_far=buys,
+            cooldown_ok=cooldown_ok,
+            has_live_position=has_live,
+        )
+        if not ok:
+            return
+        if pos and pos.paper and pos.ticker == ticker and side_to_yes(detail) != pos.side:
+            return
+        paper_buy(st=st, view=view, side=detail, now=now, cfg=self.cfg, store=self.store, taker_rate=rate)
+        st.last_paper_entry = now
+
+    def _paper_close(self, st: AssetRT, pos: Position, now: float, rate: float) -> None:
+        bid = self._exit_bid(st, pos)
+        exit_fee = 0.0 if bid is None else fee_dollars(pos.contracts, bid, rate)
+        self._journal_close(st, pos, pos.contracts, bid, exit_fee, now, "paper-closed")
+        self.store.add_paper_order(
+            asset=st.name,
+            ticker=pos.ticker,
+            side=pos.side,
+            action="sell",
+            price=bid,
+            contracts=pos.contracts,
+            fee=exit_fee,
+            edge=None,
+            chop=pos.chop,
+            ts=now,
+        )
+        self.store.clear_paper_open(st.name)
+        st.book.position = None
 
     def _maybe_scan(self, st: AssetRT, now: float) -> None:
         strategy = self._strategy()
@@ -272,8 +378,10 @@ class Desk:
             self.store.add_scan(st.name, side, ask, edge)
             st.scan_at[(ticker, side)] = now
 
-    def _preview(self, st: AssetRT, now: float, strategy: dict) -> dict:
+    def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
         metrics = self._metrics(st, now)
+        if paper_buys is None:
+            paper_buys = self._paper_buys(st)
         return build_asset(
             asset=st.name,
             now=now,
@@ -291,6 +399,7 @@ class Desk:
             crossings=metrics["crossings"],
             position=st.book.position,
             already_entered_hour=self._already_entered_hour(st.name, now),
+            paper_buys=paper_buys,
         )
 
     def _apply_market(self, st: AssetRT, market: dict | None, now: float) -> None:
@@ -302,6 +411,8 @@ class Desk:
             if row:
                 row["ts"] = now
                 self.store.add_journal(row)
+                if book.position and book.position.paper:
+                    self.store.clear_paper_open(st.name)
             st.book = new_book
             st.book.asset = st.name
         st.book.ticker = market["ticker"]
@@ -321,6 +432,8 @@ class Desk:
             row = _auto_settle(pos, st.book.strike, self._ref(st, now))
             row["ts"] = now
             self.store.add_journal(row)
+            if pos.paper:
+                self.store.clear_paper_open(st.name)
             st.book.position = None
         st.book.strike = None
         st.book.yes_bid = None
@@ -352,7 +465,7 @@ class Desk:
                 live[pos["ticker"]] = pos
         for st in self.assets.values():
             held = st.book.position
-            if not held:
+            if not held or held.paper:
                 continue
             api = live.get(held.ticker)
             if api is None:
@@ -365,6 +478,8 @@ class Desk:
     def _seed_positions(self, positions: list[dict], now: float) -> None:
         parsed = [p for p in (kalshi.parse_position(r) for r in positions) if p]
         for st in self.assets.values():
+            if st.book.position and st.book.position.paper:
+                continue
             series = st.meta["series"]
             match = next((p for p in parsed if str(p["ticker"]).startswith(series)), None)
             if not match:
