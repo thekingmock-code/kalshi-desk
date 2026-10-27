@@ -13,13 +13,13 @@
 set -euo pipefail
 
 DOMAIN="${DOMAIN:-mockkingdesk.com}"
-HOSTNAME="${HOSTNAME:-desk.${DOMAIN}}"
+DESK_FQDN="${DESK_FQDN:-desk.${DOMAIN}}"
 APP_DIR="${APP_DIR:-/root/kalshi-desk}"
 TUNNEL_NAME="${TUNNEL_NAME:-kalshi-desk}"
 REPO_URL="${REPO_URL:-}"
 
 echo "=== Kalshi desk bootstrap ==="
-echo "Domain: https://${HOSTNAME}"
+echo "Domain: https://${DESK_FQDN}"
 echo ""
 
 if [[ $EUID -ne 0 ]]; then
@@ -103,7 +103,7 @@ if [[ -z "$TUNNEL_ID" ]]; then
   exit 1
 fi
 
-cloudflared tunnel route dns "$TUNNEL_NAME" "$HOSTNAME" 2>/dev/null || true
+cloudflared tunnel route dns "$TUNNEL_NAME" "$DESK_FQDN" 2>/dev/null || true
 
 CRED="$CFDIR/${TUNNEL_ID}.json"
 if [[ ! -f "$CRED" ]]; then
@@ -116,7 +116,7 @@ tunnel: ${TUNNEL_ID}
 credentials-file: ${CRED}
 
 ingress:
-  - hostname: ${HOSTNAME}
+  - hostname: ${DESK_FQDN}
     service: http://127.0.0.1:43123
   - service: http_status:404
 EOF
@@ -132,6 +132,6 @@ systemctl restart cloudflared
 
 echo ""
 echo "=== Done ==="
-echo "Bookmark: https://${HOSTNAME}"
+echo "Bookmark: https://${DESK_FQDN}"
 echo "Desk:  systemctl status kalshi-desk"
 echo "Tunnel: systemctl status cloudflared"
