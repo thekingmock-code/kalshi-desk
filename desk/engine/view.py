@@ -9,7 +9,8 @@ from desk.engine.chop import chop_label, chop_score
 from desk.engine.gauge import build_gauge
 from desk.engine.model import fair_up, fee_dollars
 from desk.engine.rollover import Position
-from desk.engine.gates_eval import net_edge
+from desk.engine.edge_modes import load_paper_modes
+from desk.engine.gates_eval import net_edge, net_edge_entry
 from desk.engine.strategies import all_pass, gate_sides
 from desk.engine.tunable import merge_params
 from desk.engine.paper import paper_entry_status
@@ -69,6 +70,7 @@ def build_asset(
     momentum_30: int | None = None,
     momentum_60: int | None = None,
     signal_hold_secs: float | None = None,
+    settings: dict | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -115,6 +117,17 @@ def build_asset(
     )
     edge_up = net_edge(p_up, market.get("yes_ask"), yes_spread, fee_one)
     edge_down = net_edge(None if p_up is None else 1 - p_up, market.get("no_ask"), no_spread, fee_one)
+    edge_up_entry = net_edge_entry(p_up, market.get("yes_ask"), fee_one)
+    edge_down_entry = net_edge_entry(None if p_up is None else 1 - p_up, market.get("no_ask"), fee_one)
+    paper_modes = load_paper_modes(settings or {})
+    edge_basis = paper_modes.get("edge_basis", "net") if strat.get("id") == "gates_15m" else "net"
+    yes_mid = None
+    if market.get("yes_bid") is not None and market.get("yes_ask") is not None:
+        yes_mid = (market["yes_bid"] + market["yes_ask"]) / 2
+    no_mid = None
+    if market.get("no_bid") is not None and market.get("no_ask") is not None:
+        no_mid = (market["no_bid"] + market["no_ask"]) / 2
+    market = {**market, "yes_mid": yes_mid, "no_mid": no_mid}
     gates = gate_sides(
         strat,
         asset=asset,
@@ -145,6 +158,7 @@ def build_asset(
         momentum_30=momentum_30,
         momentum_60=momentum_60,
         signal_hold_secs=signal_hold_secs,
+        edge_basis=edge_basis,
     )
     locked = [c for c in gates.get("UP", []) if c.get("locked")]
     gate_summary = None
@@ -184,14 +198,23 @@ def build_asset(
             or (secs_left is not None and secs_left < 0),
             "yes_ask": market.get("yes_ask"),
             "no_ask": market.get("no_ask"),
+            "yes_mid": yes_mid,
+            "no_mid": no_mid,
         },
         trade=trade,
-        bot={"edge_up": edge_up, "edge_down": edge_down},
+        bot={
+            "edge_up": edge_up,
+            "edge_down": edge_down,
+            "edge_up_entry": edge_up_entry,
+            "edge_down_entry": edge_down_entry,
+            "p_up": p_up,
+        },
         gates=gates,
         buys_so_far=paper_buys,
         cooldown_ok=paper_cooldown_ok,
         cooldown_remaining=paper_cooldown_remaining,
         has_live_position=has_live_position,
+        settings=settings,
     )
     tab_pos = "FLAT"
     tab_pnl = None
@@ -233,6 +256,8 @@ def build_asset(
             "eff_s": eff_s,
             "edge_up": edge_up,
             "edge_down": edge_down,
+            "edge_up_entry": edge_up_entry,
+            "edge_down_entry": edge_down_entry,
             "ref": ref,
         },
         "trade": trade,

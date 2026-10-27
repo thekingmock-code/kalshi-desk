@@ -91,7 +91,7 @@ def _spike_chase_block(ctx: GateContext) -> tuple[bool, str]:
     return False, "ok"
 
 
-def weekend_checks(ctx: GateContext) -> list[dict]:
+def weekend_checks(ctx: GateContext, *, ignore_edge_gates: bool = False) -> list[dict]:
     checks: list[dict] = []
     spread = None if ctx.ask is None or ctx.bid is None else ctx.ask - ctx.bid
     lag = ctx.lag
@@ -125,7 +125,7 @@ def weekend_checks(ctx: GateContext) -> list[dict]:
     # Gate 4 — probability edge (model − mid, cents)
     raw = raw_prob_edge_cents(ctx)
     need_c = required_prob_edge_cents(ctx)
-    g4 = raw is not None and raw >= need_c
+    g4 = ignore_edge_gates or (raw is not None and raw >= need_c)
     checks.append(
         _check(
             "G4 Prob edge",

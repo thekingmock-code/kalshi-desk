@@ -165,6 +165,16 @@
   .paper-entry-hint.ready { border-color: var(--profit); color: var(--profit); }
   .paper-entry-hint.blocked { color: var(--muted); }
   .paper-entry-hint.holding { color: var(--gold); }
+  .paper-modes {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 8px 10px;
+    margin: 8px 0;
+    font-size: 12px;
+  }
+  .paper-modes h3 { margin: 0 0 8px; font-size: 10px; letter-spacing: 0.12em; color: var(--muted); }
+  .paper-modes label.toggle { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .mode-banner { border-color: var(--blue) !important; color: var(--blue) !important; }
   .suggest {
     font-size: clamp(42px, 16vw, 76px);
     font-weight: 800;
@@ -250,6 +260,7 @@
     <section id="strategy">
       <h2>STRATEGY</h2>
       <div id="stabs" class="stabs"></div>
+      <div id="paperModes" class="paper-modes" hidden></div>
       <div id="sliders"></div>
       <div id="exits" class="muted"></div>
       <div id="gates" class="sides"></div>
@@ -258,6 +269,7 @@
     <section id="journal">
       <h2 id="journalTitle">JOURNAL</h2>
       <div id="jstats" class="stats"></div>
+      <div id="paperAnalytics" class="stats"></div>
       <table class="cal-table" id="calibration">
         <thead><tr><th>P(up) bucket</th><th>n</th><th>UP rate</th></tr></thead>
         <tbody id="calbody"></tbody>
@@ -369,8 +381,14 @@ function render(state) {
   document.getElementById("clock").textContent = state.et || "";
   setLinkStatus((wsConnected ? "Live (WebSocket)" : "Live (HTTP poll)") + " · updated " + (state.et || "—"));
   const note = document.getElementById("note");
-  note.hidden = !state.auth_note;
-  note.textContent = state.auth_note || "";
+  const view0 = state.assets[asset];
+  const modeLbl = view0?.paper_entry?.gate_mode_label;
+  const noteParts = [];
+  if (modeLbl) noteParts.push("Paper: " + modeLbl);
+  if (state.auth_note) noteParts.push(state.auth_note);
+  note.hidden = !noteParts.length;
+  note.textContent = noteParts.join(" · ");
+  note.classList.toggle("mode-banner", !!modeLbl);
   renderTabs(state);
   const view = state.assets[asset];
   renderTrade(view, state);
@@ -802,6 +820,7 @@ function renderStrategy(state, view) {
   }
   const spec = (state.strategies || []).find((s) => s.id === state.active);
   if (!spec) return;
+  buildPaperModes(state);
   const params = view.tunable_params || spec.params || {};
   const sig = state.active + ":" + asset + ":" + JSON.stringify(params);
   const focused = document.activeElement && document.activeElement.closest("#sliders");
@@ -909,6 +928,89 @@ function renderStrategy(state, view) {
   }
 }
 
+function buildPaperModes(state) {
+  const root = document.getElementById("paperModes");
+  if (!root) return;
+  root.replaceChildren();
+  if (state.active !== "gates_15m" || state.observe_only) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+  const h = document.createElement("h3");
+  h.textContent = "PAPER EDGE (15M GATES)";
+  root.appendChild(h);
+  const m = state.paper_modes || {};
+  const basis = document.createElement("label");
+  basis.className = "toggle";
+  const basisSel = document.createElement("select");
+  for (const opt of [["net", "Net (current)"], ["entry", "Entry (no half-spread)"]]) {
+    const o = document.createElement("option");
+    o.value = opt[0];
+    o.textContent = "Edge basis: " + opt[1];
+    if ((m.edge_basis || "net") === opt[0]) o.selected = true;
+    basisSel.appendChild(o);
+  }
+  basisSel.onchange = () => postJSON("/api/settings", { paper_edge_basis: basisSel.value });
+  basis.append(basisSel);
+  root.appendChild(basis);
+
+  const floor = document.createElement("label");
+  floor.className = "slider";
+  const ft = document.createElement("div");
+  ft.className = "slider-top";
+  ft.innerHTML = "<span>Min net edge floor</span><b id=\"pmFloorVal\">" + Math.round(m.min_net_edge_cents ?? 0) + "¢</b>";
+  const fin = document.createElement("input");
+  fin.type = "range";
+  fin.min = -10;
+  fin.max = 10;
+  fin.step = 1;
+  fin.value = m.min_net_edge_cents ?? 0;
+  fin.oninput = () => {
+    document.getElementById("pmFloorVal").textContent = fin.value + "¢";
+    clearTimeout(fin._t);
+    fin._t = setTimeout(() => postJSON("/api/settings", { paper_min_net_edge_cents: Number(fin.value) }), 220);
+  };
+  floor.append(ft, fin);
+  root.appendChild(floor);
+
+  function toggle(label, key) {
+    const row = document.createElement("label");
+    row.className = "toggle";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!m[key];
+    cb.onchange = () => {
+      const body = {};
+      body["paper_" + key] = cb.checked;
+      postJSON("/api/settings", body);
+    };
+    row.append(cb, document.createTextNode(label));
+    root.appendChild(row);
+  }
+  toggle("Ignore edge gate", "ignore_edge_gate");
+  toggle("Fade model", "fade_model");
+
+  const trig = document.createElement("label");
+  trig.className = "slider";
+  const tt = document.createElement("div");
+  tt.className = "slider-top";
+  tt.innerHTML = "<span>Fade trigger |model−mid|</span><b id=\"pmTrigVal\">" + Math.round(m.fade_trigger_cents ?? 10) + "¢</b>";
+  const tin = document.createElement("input");
+  tin.type = "range";
+  tin.min = 5;
+  tin.max = 25;
+  tin.step = 1;
+  tin.value = m.fade_trigger_cents ?? 10;
+  tin.oninput = () => {
+    document.getElementById("pmTrigVal").textContent = tin.value + "¢";
+    clearTimeout(tin._t);
+    tin._t = setTimeout(() => postJSON("/api/settings", { paper_fade_trigger_cents: Number(tin.value) }), 220);
+  };
+  trig.append(tt, tin);
+  root.appendChild(trig);
+}
+
 function buildSliders(spec, params) {
   const root = document.getElementById("sliders");
   root.replaceChildren();
@@ -942,6 +1044,37 @@ function buildSliders(spec, params) {
 }
 
 function renderJournal(state) {
+  const pa = document.getElementById("paperAnalytics");
+  if (pa) {
+    pa.replaceChildren();
+    const an = state.paper_analytics;
+    if (an && an.by_edge_bucket) {
+      const h = document.createElement("div");
+      h.className = "muted";
+      h.textContent = "Paper analytics (logged entries)";
+      pa.appendChild(h);
+      for (const [bucket, row] of Object.entries(an.by_edge_bucket)) {
+        if (!row.count) continue;
+        const cell = document.createElement("div");
+        cell.innerHTML = "<div class=\"muted\">Edge " + bucket + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
+        pa.appendChild(cell);
+      }
+      for (const [mode, row] of Object.entries(an.by_gate_mode || {})) {
+        const cell = document.createElement("div");
+        cell.innerHTML = "<div class=\"muted\">Mode " + mode + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
+        pa.appendChild(cell);
+      }
+    }
+  }
+  const calBody = document.getElementById("calbody");
+  if (calBody && state.paper_analytics?.calibration?.length) {
+    calBody.replaceChildren();
+    for (const row of state.paper_analytics.calibration) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + row.bucket + "</td><td>" + row.n + "</td><td>" + (row.yes_settle_rate == null ? "—" : rate(row.yes_settle_rate)) + "</td>";
+      calBody.appendChild(tr);
+    }
+  }
   const stats = (state.journal && state.journal.stats) || {};
   const label = (state.journal && state.journal.stats_label) || "paper";
   const jt = document.getElementById("journalTitle");

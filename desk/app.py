@@ -31,6 +31,11 @@ class SettingBody(BaseModel):
     value: float | None = None
     active: str | None = None
     asset: str | None = None
+    paper_edge_basis: str | None = None
+    paper_min_net_edge_cents: float | None = None
+    paper_ignore_edge_gate: bool | None = None
+    paper_fade_model: bool | None = None
+    paper_fade_trigger_cents: float | None = None
 
 
 @app.get("/")
@@ -74,7 +79,18 @@ async def stream(socket: WebSocket):
 @app.post("/api/settings")
 async def settings(body: SettingBody):
     async with desk._lock:
-        return desk.update_setting(body.active, body.strategy, body.key, body.value, body.asset)
+        return desk.update_setting(
+            body.active,
+            body.strategy,
+            body.key,
+            body.value,
+            body.asset,
+            paper_edge_basis=body.paper_edge_basis,
+            paper_min_net_edge_cents=body.paper_min_net_edge_cents,
+            paper_ignore_edge_gate=body.paper_ignore_edge_gate,
+            paper_fade_model=body.paper_fade_model,
+            paper_fade_trigger_cents=body.paper_fade_trigger_cents,
+        )
 
 
 @app.post("/api/settings/reset")

@@ -41,6 +41,8 @@ class GateContext:
     momentum_30: int | None = None
     momentum_60: int | None = None
     signal_hold_secs: float | None = None
+    net_edge_entry: float | None = None
+    gate_edge: float | None = None
 
 
 def net_edge(prob: float | None, ask: float | None, spread: float | None, fee_fn: Callable[[float], float]) -> float | None:
@@ -51,7 +53,19 @@ def net_edge(prob: float | None, ask: float | None, spread: float | None, fee_fn
     return prob - ask - fee - half
 
 
-def locked_checks(ctx: GateContext) -> list[dict]:
+def net_edge_entry(prob: float | None, ask: float | None, fee_fn: Callable[[float], float]) -> float | None:
+    if prob is None or ask is None:
+        return None
+    return prob - ask - fee_fn(ask)
+
+
+def gate_edge_value(basis: str, edge_net: float | None, edge_entry: float | None) -> float | None:
+    if basis == "entry":
+        return edge_entry
+    return edge_net
+
+
+def locked_checks(ctx: GateContext, *, ignore_edge_gates: bool = False, skip_divergence: bool = False) -> list[dict]:
     checks: list[dict] = []
     window_ok = (
         ctx.secs_left is not None and L.ENTRY_SECS_MIN <= ctx.secs_left <= L.ENTRY_SECS_MAX
@@ -84,20 +98,22 @@ def locked_checks(ctx: GateContext) -> list[dict]:
     elif ctx.prob is None or mid is None:
         div_ok = False
         div_d = "missing model or mid"
+    if skip_divergence:
+        div_ok = True
+        div_d = (div_d + " · skipped fade") if div_d else "skipped (fade)"
     checks.append(_check(L.LOCKED_LABELS[2], div_ok, div_d, locked=True))
     need_extra = ctx.secs_left is not None and ctx.secs_left < L.LATE_SECS
     edge_need = ctx.params.get("net_edge_min", 0.02)
     if need_extra:
         edge_need = float(edge_need) + L.LATE_EDGE_EXTRA
-    late_ok = ctx.net_edge is not None and ctx.net_edge >= edge_need
+    use_edge = ctx.gate_edge if ctx.gate_edge is not None else ctx.net_edge
+    late_ok = ignore_edge_gates or (use_edge is not None and use_edge >= edge_need)
+    edge_s = "unknown" if use_edge is None else f"{use_edge * 100:+.1f}¢"
     checks.append(
         _check(
             L.LOCKED_LABELS[3],
             late_ok,
-            "unknown"
-            if ctx.net_edge is None
-            else f"{ctx.net_edge * 100:+.1f}¢ need {edge_need * 100:.1f}¢"
-            + (" (+2¢ late)" if need_extra else ""),
+            "bypassed (ignore edge)" if ignore_edge_gates else edge_s + f" need {edge_need * 100:.1f}¢" + (" (+2¢ late)" if need_extra else ""),
             locked=True,
         )
     )
@@ -117,14 +133,16 @@ def _trend_sigma_ok(ctx: GateContext) -> tuple[bool, str]:
     return ok, f"{sigma:.2f}σ vs −{need:.2f} need"
 
 
-def strategy_checks(kind: str, ctx: GateContext) -> list[dict]:
+def strategy_checks(kind: str, ctx: GateContext, *, ignore_edge_gates: bool = False) -> list[dict]:
     checks: list[dict] = []
     spread = None if ctx.ask is None or ctx.bid is None else ctx.ask - ctx.bid
-    edge_s = "unknown" if ctx.net_edge is None else f"{ctx.net_edge * 100:+.1f}¢"
+    use_edge = ctx.gate_edge if ctx.gate_edge is not None else ctx.net_edge
+    edge_s = "unknown" if use_edge is None else f"{use_edge * 100:+.1f}¢"
 
     if kind == "gates":
         need = float(ctx.params.get("net_edge_min", 0.02))
-        checks.append(_check("Net edge", ctx.net_edge is not None and ctx.net_edge >= need, edge_s))
+        edge_ok = ignore_edge_gates or (use_edge is not None and use_edge >= need)
+        checks.append(_check("Net edge", edge_ok, "bypassed" if ignore_edge_gates else edge_s))
         t_ok, t_d = _trend_sigma_ok(ctx)
         checks.append(_check("Trend σ", t_ok, t_d))
         agrees = ctx.momentum is not None and ctx.momentum > 0
@@ -247,16 +265,19 @@ def evaluate_side(
     strategy: dict,
     ctx_base: GateContext,
     fee_fn: Callable[[float], float],
+    ignore_edge_gates: bool = False,
+    skip_divergence: bool = False,
 ) -> list[dict]:
+    del fee_fn
     kind = strategy.get("kind")
     if kind == "hour":
         return [_check("15m desk only", False, "use 1h product")]
     if kind == "weekend_money":
         from desk.engine.weekend_money import weekend_checks
 
-        return weekend_checks(ctx_base)
-    locked = locked_checks(ctx_base)
-    strat = strategy_checks(kind, ctx_base)
+        return weekend_checks(ctx_base, ignore_edge_gates=ignore_edge_gates)
+    locked = locked_checks(ctx_base, ignore_edge_gates=ignore_edge_gates, skip_divergence=skip_divergence)
+    strat = strategy_checks(kind, ctx_base, ignore_edge_gates=ignore_edge_gates)
     return locked + strat
 
 

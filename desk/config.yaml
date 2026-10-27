@@ -59,6 +59,7 @@ paper:
   contracts: 1
   entry_cooldown_secs: 30
   require_gates: true
+  min_net_edge_cents: 0
   require_positive_edge: true
   require_lag_side: false
 

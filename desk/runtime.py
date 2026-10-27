@@ -24,6 +24,14 @@ from desk.engine.tunable import (
 )
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
+from desk.engine.edge_modes import (
+    PAPER_SETTINGS_KEY,
+    default_paper_modes,
+    entry_snapshot,
+    load_paper_modes,
+    paper_trade_analytics,
+    resolve_gate_mode,
+)
 from desk.engine.paper import can_paper_enter, paper_buy, side_to_yes
 from desk.engine.shadow import (
     calibration,
@@ -235,6 +243,8 @@ class Desk:
         rows = self.store.journal()
         shadow = self.store.shadow_all()
         paper_on = bool((self.cfg.get("paper") or {}).get("enabled"))
+        saved = self.store.settings()
+        paper_modes = load_paper_modes(saved) if paper_on else default_paper_modes()
         if paper_on:
             stamped = stamp_rows(rows)
             fill_rows = fill_journal_rows_for_ui(stamped)
@@ -256,7 +266,6 @@ class Desk:
             }
             calibration_rows = shadow
         strategies = []
-        saved = self.store.settings()
         for sid, spec in self.cfg["strategies"].items():
             if spec.get("kind") == "hour" or sid == "hour_end":
                 continue
@@ -288,6 +297,8 @@ class Desk:
             "scanner": stamp_rows(self.store.scans()),
             "paper_orders": stamp_rows(self.store.paper_orders()),
             "rules": self.cfg["suggest"],
+            "paper_modes": paper_modes,
+            "paper_analytics": paper_trade_analytics(self.store.paper_trades()) if paper_on else None,
         }
 
     def _sample(self, now: float) -> None:
@@ -407,7 +418,34 @@ class Desk:
             return
         if pos and pos.paper and pos.ticker == ticker and side_to_yes(detail) != pos.side:
             return
-        paper_buy(st=st, view=view, side=detail, now=now, cfg=self.cfg, store=self.store, taker_rate=rate)
+        entry_log = None
+        if strategy.get("id") == "gates_15m":
+            modes = load_paper_modes(self.store.settings())
+            mkt = view.get("market") or {}
+            bot = view.get("bot") or {}
+            trade = view.get("trade") or {}
+            entry_log = entry_snapshot(
+                side=detail,
+                bot=bot,
+                market=mkt,
+                p_up=bot.get("p_up"),
+                yes_mid=mkt.get("yes_mid"),
+                no_mid=mkt.get("no_mid"),
+                secs_left=trade.get("secs_left"),
+                fee_fn=lambda p: fee_dollars(1, p, rate),
+                modes=modes,
+                gate_mode=resolve_gate_mode(modes),
+            )
+        paper_buy(
+            st=st,
+            view=view,
+            side=detail,
+            now=now,
+            cfg=self.cfg,
+            store=self.store,
+            taker_rate=rate,
+            entry_log=entry_log,
+        )
         st.last_paper_entry = now
 
     def _paper_close(self, st: AssetRT, pos: Position, now: float, rate: float) -> None:
@@ -464,6 +502,7 @@ class Desk:
             now=now,
             cfg=self.cfg,
             strategy=strategy,
+            settings=self.store.settings(),
             market=self._market_view(st),
             composite=metrics["composite"],
             composite_age=metrics["composite_age"],
@@ -515,6 +554,18 @@ class Desk:
                 row["ts"] = now
                 self.store.add_journal(row)
                 if st.book.position and st.book.position.paper:
+                    pos = st.book.position
+                    ref = self._ref(st, now)
+                    strike = st.book.strike
+                    up_won = None if ref is None or strike is None else ref >= strike
+                    self.store.settle_paper_trade(
+                        pos.asset,
+                        pos.ticker,
+                        pos.side,
+                        up_won=up_won,
+                        net_pnl=row.get("net_pnl"),
+                        right=row.get("right"),
+                    )
                     self.store.clear_paper_open(st.name)
             self._settle_shadow(st, self._settlement_ref(st, now))
             self._apply_pending_params(st.name)
@@ -806,6 +857,16 @@ class Desk:
                 "ticker": pos.ticker,
             }
         )
+        if pos.paper:
+            up_won = None if ref is None or strike is None else ref >= strike
+            self.store.settle_paper_trade(
+                pos.asset,
+                pos.ticker,
+                pos.side,
+                up_won=up_won,
+                net_pnl=pnl,
+                right=right,
+            )
 
     def _exit_bid(self, st: AssetRT, pos: Position) -> float | None:
         if pos.side == "YES":
@@ -1133,6 +1194,29 @@ class Desk:
         window = float(self.cfg["feeds"]["momentum_window_secs"])
         return self._momentum_secs(st, now, price, window)
 
+    def update_paper_modes(
+        self,
+        *,
+        edge_basis: str | None = None,
+        min_net_edge_cents: float | None = None,
+        ignore_edge_gate: bool | None = None,
+        fade_model: bool | None = None,
+        fade_trigger_cents: float | None = None,
+    ) -> dict:
+        modes = load_paper_modes(self.store.settings())
+        if edge_basis is not None:
+            modes["edge_basis"] = edge_basis if edge_basis in ("net", "entry") else "net"
+        if min_net_edge_cents is not None:
+            modes["min_net_edge_cents"] = max(-10.0, min(10.0, float(min_net_edge_cents)))
+        if ignore_edge_gate is not None:
+            modes["ignore_edge_gate"] = bool(ignore_edge_gate)
+        if fade_model is not None:
+            modes["fade_model"] = bool(fade_model)
+        if fade_trigger_cents is not None:
+            modes["fade_trigger_cents"] = max(1.0, min(30.0, float(fade_trigger_cents)))
+        self.store.save_setting(PAPER_SETTINGS_KEY, modes)
+        return {"ok": True, "state": self.snapshot()}
+
     def update_setting(
         self,
         active: str | None,
@@ -1140,8 +1224,30 @@ class Desk:
         key: str | None,
         value: float | None,
         asset: str | None = None,
+        paper_edge_basis: str | None = None,
+        paper_min_net_edge_cents: float | None = None,
+        paper_ignore_edge_gate: bool | None = None,
+        paper_fade_model: bool | None = None,
+        paper_fade_trigger_cents: float | None = None,
     ) -> dict:
         now = time.time()
+        if any(
+            x is not None
+            for x in (
+                paper_edge_basis,
+                paper_min_net_edge_cents,
+                paper_ignore_edge_gate,
+                paper_fade_model,
+                paper_fade_trigger_cents,
+            )
+        ):
+            return self.update_paper_modes(
+                edge_basis=paper_edge_basis,
+                min_net_edge_cents=paper_min_net_edge_cents,
+                ignore_edge_gate=paper_ignore_edge_gate,
+                fade_model=paper_fade_model,
+                fade_trigger_cents=paper_fade_trigger_cents,
+            )
         if active:
             if active not in self.cfg["strategies"]:
                 return {"ok": False, "error": "unknown strategy"}

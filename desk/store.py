@@ -105,6 +105,27 @@ class Store:
                 edge REAL,
                 chop REAL
             );
+            CREATE TABLE IF NOT EXISTS paper_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL,
+                gate_mode TEXT NOT NULL,
+                edge_net REAL,
+                edge_entry REAL,
+                raw_prob_edge REAL,
+                edge_bucket TEXT,
+                p_up REAL,
+                ask REAL,
+                fee REAL,
+                spread REAL,
+                secs_left REAL,
+                settled INTEGER NOT NULL DEFAULT 0,
+                up_won INTEGER,
+                net_pnl REAL,
+                right INTEGER
+            );
             """
         )
         self.conn.commit()
@@ -159,6 +180,7 @@ class Store:
         self.conn.execute("DELETE FROM scanner")
         self.conn.execute("DELETE FROM paper_buys")
         self.conn.execute("DELETE FROM paper_orders")
+        self.conn.execute("DELETE FROM paper_trades")
         self.conn.execute("DELETE FROM paper_open")
         self.conn.execute("DELETE FROM shadow_paper")
         self.conn.commit()
@@ -283,6 +305,64 @@ class Store:
             ),
         )
         self.conn.commit()
+
+    def add_paper_trade(self, **row) -> None:
+        from desk.engine.edge_modes import edge_bucket_cents
+
+        bucket = edge_bucket_cents(row.get("edge_net"))
+        self.conn.execute(
+            """
+            INSERT INTO paper_trades (
+              ts, asset, ticker, side, gate_mode, edge_net, edge_entry, raw_prob_edge,
+              edge_bucket, p_up, ask, fee, spread, secs_left
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.get("ts", time.time()),
+                row["asset"],
+                row["ticker"],
+                row["side"],
+                row.get("gate_mode", "normal"),
+                row.get("edge_net"),
+                row.get("edge_entry"),
+                row.get("raw_prob_edge"),
+                bucket,
+                row.get("p_up"),
+                row.get("ask"),
+                row.get("fee"),
+                row.get("spread"),
+                row.get("secs_left"),
+            ),
+        )
+        self.conn.commit()
+
+    def settle_paper_trade(self, asset: str, ticker: str, side: str, *, up_won: bool | None, net_pnl: float | None, right: bool | None) -> None:
+        self.conn.execute(
+            """
+            UPDATE paper_trades SET settled = 1, up_won = ?, net_pnl = ?, right = ?
+            WHERE id = (
+              SELECT id FROM paper_trades
+              WHERE asset = ? AND ticker = ? AND side = ? AND settled = 0
+              ORDER BY ts DESC LIMIT 1
+            )
+            """,
+            (
+                None if up_won is None else int(bool(up_won)),
+                net_pnl,
+                None if right is None else int(bool(right)),
+                asset,
+                ticker,
+                side,
+            ),
+        )
+        self.conn.commit()
+
+    def paper_trades(self, limit: int = 500) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM paper_trades ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def paper_orders(self, limit: int = 40) -> list[dict]:
         rows = self.conn.execute(
