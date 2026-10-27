@@ -25,9 +25,12 @@ python3 -m venv .venv
 ./.venv/bin/pip install -U pip
 ./.venv/bin/pip install -r requirements.txt
 
-if [[ ! -f .env ]] && [[ -f .env.example ]]; then
-  cp .env.example .env
-  echo "Created .env from .env.example — add Kalshi keys if you have them."
+if [[ ! -f .env ]]; then
+  cat > .env <<'EOF'
+# Optional: Kalshi RTI index + live positions (paper works without these)
+# KALSHI_ACCESS_KEY=
+# KALSHI_PRIVATE_KEY_PATH=
+EOF
 fi
 
 sudo cp deploy/kalshi-desk.service /etc/systemd/system/kalshi-desk.service
