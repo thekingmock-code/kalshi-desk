@@ -66,4 +66,5 @@ export REPO_URL="https://github.com/YOUR_USER/kalshi-desk.git"
 |---------|-----|
 | `curl` / desk not 200 | `journalctl -u kalshi-desk -f` |
 | 502 on desk.mockkingdesk.com | `systemctl restart kalshi-desk cloudflared` |
+| `cloudflared.service not found` | `git pull` then rerun bootstrap, or: `cp /root/kalshi-desk/deploy/cloudflared.service /etc/systemd/system/` && `systemctl daemon-reload && systemctl enable --now cloudflared` |
 | DNS | Cloudflare dashboard → mockkingdesk.com → DNS → CNAME `desk` |

@@ -133,9 +133,15 @@ ingress:
   - service: http_status:404
 EOF
 
-cp /etc/cloudflared/config.yml "$CFDIR/config.yml"
-sed -i "s|/etc/cloudflared|${CFDIR}|g; s|${CRED_NAME}|$(basename "$CRED")|g" "$CFDIR/config.yml" 2>/dev/null || \
-  cp /etc/cloudflared/config.yml "$CFDIR/config.yml"
+cat > "$CFDIR/config.yml" <<EOF
+tunnel: ${TUNNEL_ID}
+credentials-file: ${CRED}
+
+ingress:
+  - hostname: ${DESK_FQDN}
+    service: http://127.0.0.1:43123
+  - service: http_status:404
+EOF
 
 if ! cloudflared --config /etc/cloudflared/config.yml service install; then
   echo "Using bundled systemd unit (cloudflared service install failed)."
