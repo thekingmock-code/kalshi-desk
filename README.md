@@ -29,7 +29,7 @@ cd ~/kalshi-desk
 REPO_URL=YOUR_REPO_URL bash deploy/install-vps.sh
 ```
 
-Then put **Cloudflare Tunnel** (or nginx) in front of `http://127.0.0.1:43123` for a stable HTTPS URL on your phone.
+Permanent HTTPS on your phone: **[deploy/CLOUDFLARE-TUNNEL.md](deploy/CLOUDFLARE-TUNNEL.md)** (buy domain on Cloudflare + free tunnel).
 
 ## Kalshi index and positions
 
