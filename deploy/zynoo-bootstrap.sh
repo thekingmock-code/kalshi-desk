@@ -111,13 +111,21 @@ cloudflared tunnel route dns "$TUNNEL_NAME" "$DESK_FQDN" 2>/dev/null || true
 
 CRED="$CFDIR/${TUNNEL_ID}.json"
 if [[ ! -f "$CRED" ]]; then
-  # newer cloudflared may store creds by uuid only
-  CRED=$(ls "$CFDIR"/*.json 2>/dev/null | head -1 || true)
+  CRED=$(ls "$CFDIR"/*.json 2>/dev/null | grep -v cert.pem | head -1 || true)
 fi
+if [[ -z "$CRED" || ! -f "$CRED" ]]; then
+  echo "Missing tunnel credentials JSON in $CFDIR"
+  echo "Try: cloudflared tunnel create $TUNNEL_NAME"
+  exit 1
+fi
+CRED_NAME=$(basename "$CRED")
 
-cat > "$CFDIR/config.yml" <<EOF
+mkdir -p /etc/cloudflared
+cp "$CRED" "/etc/cloudflared/${CRED_NAME}"
+
+cat > /etc/cloudflared/config.yml <<EOF
 tunnel: ${TUNNEL_ID}
-credentials-file: ${CRED}
+credentials-file: /etc/cloudflared/${CRED_NAME}
 
 ingress:
   - hostname: ${DESK_FQDN}
@@ -125,13 +133,16 @@ ingress:
   - service: http_status:404
 EOF
 
-mkdir -p /etc/cloudflared
-cp "$CFDIR/config.yml" /etc/cloudflared/config.yml
-cp "$CRED" /etc/cloudflared/
-sed -i "s|${CFDIR}|/etc/cloudflared|g" /etc/cloudflared/config.yml
+cp /etc/cloudflared/config.yml "$CFDIR/config.yml"
+sed -i "s|/etc/cloudflared|${CFDIR}|g; s|${CRED_NAME}|$(basename "$CRED")|g" "$CFDIR/config.yml" 2>/dev/null || \
+  cp /etc/cloudflared/config.yml "$CFDIR/config.yml"
 
-cloudflared service install 2>/dev/null || true
-systemctl enable cloudflared 2>/dev/null || true
+if ! cloudflared --config /etc/cloudflared/config.yml service install; then
+  echo "Using bundled systemd unit (cloudflared service install failed)."
+  cp "$APP_DIR/deploy/cloudflared.service" /etc/systemd/system/cloudflared.service
+fi
+systemctl daemon-reload
+systemctl enable cloudflared
 systemctl restart cloudflared
 
 echo ""

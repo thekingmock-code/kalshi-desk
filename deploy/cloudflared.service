@@ -1,0 +1,14 @@
+[Unit]
+Description=Cloudflare Tunnel (Kalshi desk)
+After=network-online.target kalshi-desk.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+TimeoutStartSec=0
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
