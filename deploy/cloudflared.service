@@ -4,8 +4,8 @@ After=network-online.target kalshi-desk.service
 Wants=network-online.target
 
 [Service]
-Type=notify
-TimeoutStartSec=0
+Type=simple
+TimeoutStartSec=30
 ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/config.yml tunnel run
 Restart=on-failure
 RestartSec=5
