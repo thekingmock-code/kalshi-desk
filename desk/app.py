@@ -36,6 +36,7 @@ class SettingBody(BaseModel):
     paper_ignore_edge_gate: bool | None = None
     paper_fade_model: bool | None = None
     paper_fade_trigger_cents: float | None = None
+    weekend_timezone: str | None = None
 
 
 @app.get("/")
@@ -90,6 +91,7 @@ async def settings(body: SettingBody):
             paper_ignore_edge_gate=body.paper_ignore_edge_gate,
             paper_fade_model=body.paper_fade_model,
             paper_fade_trigger_cents=body.paper_fade_trigger_cents,
+            weekend_timezone=body.weekend_timezone,
         )
 
 

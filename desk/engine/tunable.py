@@ -66,6 +66,7 @@ ARB_KEYS = ("ask_floor", "ask_cap", "spread_max", "vol_max")
 WEEKEND_KEYS = (
     "trend_sigma_min",
     "prob_edge_min_cents",
+    "weekend_bump_cents",
     "ask_floor",
     "ask_cap",
     "spread_max",
@@ -80,6 +81,7 @@ WEEKEND_DEFAULTS: dict[str, dict[str, float]] = {
         "ask_cap": 0.55,
         "spread_max": 0.03,
         "entry_hold_secs": 2.0,
+        "weekend_bump_cents": 0.0,
     },
     "SOL": {
         "trend_sigma_min": 0.30,
@@ -88,6 +90,7 @@ WEEKEND_DEFAULTS: dict[str, dict[str, float]] = {
         "ask_cap": 0.55,
         "spread_max": 0.03,
         "entry_hold_secs": 2.0,
+        "weekend_bump_cents": 0.0,
     },
     "BNB": {
         "trend_sigma_min": 0.32,
@@ -96,6 +99,7 @@ WEEKEND_DEFAULTS: dict[str, dict[str, float]] = {
         "ask_cap": 0.55,
         "spread_max": 0.05,
         "entry_hold_secs": 2.0,
+        "weekend_bump_cents": 0.0,
     },
 }
 
@@ -109,6 +113,7 @@ SLIDER_META: dict[str, dict[str, Any]] = {
     "vol_min": {"label": "Vol min vs baseline", "step": 0.05, "unit": "ratio"},
     "trend_sigma_min": {"label": "Trend σ min", "step": 0.05, "unit": "ratio"},
     "prob_edge_min_cents": {"label": "Prob edge min", "step": 0.5, "unit": "cents_raw"},
+    "weekend_bump_cents": {"label": "Weekend G4 bump (c)", "step": 0.5, "unit": "cents_raw"},
     "entry_hold_secs": {"label": "Signal hold", "step": 1, "unit": "seconds"},
 }
 
@@ -148,6 +153,8 @@ def slider_defs(strategy_id: str, asset: str) -> list[dict]:
             lo, hi = 2.0, 8.0
         elif strategy_id == "weekend_money" and key == "entry_hold_secs":
             lo, hi = 2.0, 15.0
+        elif strategy_id == "weekend_money" and key == "weekend_bump_cents":
+            lo, hi = 0.0, 5.0
         else:
             continue
         sliders.append(
@@ -178,6 +185,8 @@ def merge_params(strategy_id: str, asset: str, saved: dict | None) -> dict[str, 
                     try:
                         if k in _SCHEMA:
                             base[k] = clamp_param(asset, k, float(v))
+                        elif k == "weekend_bump_cents":
+                            base[k] = max(0.0, min(5.0, float(v)))
                         else:
                             base[k] = float(v)
                     except (KeyError, TypeError, ValueError):

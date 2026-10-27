@@ -43,6 +43,7 @@ class GateContext:
     signal_hold_secs: float | None = None
     net_edge_entry: float | None = None
     gate_edge: float | None = None
+    is_weekend: bool = False
 
 
 def net_edge(prob: float | None, ask: float | None, spread: float | None, fee_fn: Callable[[float], float]) -> float | None:

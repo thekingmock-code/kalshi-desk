@@ -1,6 +1,9 @@
 """THE WEEKEND MONEY — Brati-style six-gate 15m entry stack."""
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from desk.engine.gates_eval import GateContext, _check, _trend_sigma_ok
 
 # 15m contract timing (900s total)
@@ -20,6 +23,36 @@ ASK_FLOOR_DEFAULT = 0.38
 ASK_CAP_DEFAULT = 0.55
 MIN_ASK_NORMAL = 0.20
 SIGNAL_HOLD_SECS = 2.0
+
+WEEKEND_PREFS_KEY = "weekend_prefs"
+
+
+def is_weekend(ts: float | None = None, tz: str = "America/New_York") -> bool:
+    """Saturday/Sunday in the given timezone (default US Eastern)."""
+    zone = ZoneInfo(tz if tz in ("America/New_York", "UTC") else "America/New_York")
+    when = datetime.now(zone) if ts is None else datetime.fromtimestamp(ts, zone)
+    return when.weekday() >= 5
+
+
+def load_weekend_prefs(settings: dict) -> dict:
+    raw = settings.get(WEEKEND_PREFS_KEY) or {}
+    tz = raw.get("timezone", "America/New_York")
+    if tz not in ("America/New_York", "UTC"):
+        tz = "America/New_York"
+    return {"timezone": tz}
+
+
+def weekend_bump_for_params(params: dict, *, is_weekend_flag: bool) -> float:
+    if not is_weekend_flag:
+        return 0.0
+    return float(params.get("weekend_bump_cents", 0.0))
+
+
+def g4_requirements(ctx: GateContext) -> tuple[float, float, float]:
+    """Return (total required cents, base cents, weekend bump cents)."""
+    base = required_prob_edge_cents(ctx)
+    bump = weekend_bump_for_params(ctx.params, is_weekend_flag=ctx.is_weekend)
+    return base + bump, base, bump
 
 
 def _mom_aligned(side: str, mom: int | None) -> bool:
@@ -124,19 +157,29 @@ def weekend_checks(ctx: GateContext, *, ignore_edge_gates: bool = False) -> list
 
     # Gate 4 — probability edge (model − mid, cents)
     raw = raw_prob_edge_cents(ctx)
-    need_c = required_prob_edge_cents(ctx)
+    need_c, base_c, bump_c = g4_requirements(ctx)
     g4 = ignore_edge_gates or (raw is not None and raw >= need_c)
-    checks.append(
-        _check(
-            "G4 Prob edge",
-            g4,
-            "unknown"
-            if raw is None
-            else f"{raw:+.1f}¢ vs {need_c:.1f}¢ need · net {ctx.net_edge * 100:+.1f}¢"
-            if ctx.net_edge is not None
-            else f"{raw:+.1f}¢ vs {need_c:.1f}¢ need",
+    if raw is None:
+        g4_detail = "unknown"
+    elif bump_c > 0:
+        g4_detail = (
+            f"G4 required {need_c:.1f}¢ (base {base_c:.1f}¢ + weekend {bump_c:.1f}¢)"
+            + (
+                f" · raw {raw:+.1f}¢ · net {ctx.net_edge * 100:+.1f}¢"
+                if ctx.net_edge is not None
+                else f" · raw {raw:+.1f}¢"
+            )
         )
-    )
+    else:
+        g4_detail = (
+            f"G4 required {need_c:.1f}¢ (base {base_c:.1f}¢ + weekend 0.0¢)"
+            + (
+                f" · raw {raw:+.1f}¢ · net {ctx.net_edge * 100:+.1f}¢"
+                if ctx.net_edge is not None
+                else f" · raw {raw:+.1f}¢"
+            )
+        )
+    checks.append(_check("G4 Prob edge", g4, g4_detail))
 
     # Gate 5 — execution band
     floor = float(ctx.params.get("ask_floor", ASK_FLOOR_DEFAULT))

@@ -39,8 +39,9 @@ def gate_sides(
     edge_basis: str = "net",
     ignore_edge_gates: bool = False,
     skip_divergence: bool = False,
+    is_weekend: bool = False,
 ) -> dict[str, list[dict]]:
-    del now, already_entered_hour
+    del already_entered_hour
     p = params or merge_params(strategy.get("id", "gates_15m"), asset, strategy.get("params"))
     yes_mid = None if yes_bid is None or yes_ask is None else (yes_bid + yes_ask) / 2
     no_mid = None if no_bid is None or no_ask is None else (no_bid + no_ask) / 2
@@ -81,6 +82,7 @@ def gate_sides(
             momentum_30=momentum_30,
             momentum_60=momentum_60,
             signal_hold_secs=signal_hold_secs,
+            is_weekend=is_weekend,
         )
         return evaluate_side(
             strategy=strategy,

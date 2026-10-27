@@ -10,6 +10,7 @@ from desk.engine.gauge import build_gauge
 from desk.engine.model import fair_up, fee_dollars
 from desk.engine.rollover import Position
 from desk.engine.edge_modes import load_paper_modes
+from desk.engine.weekend_money import is_weekend, load_weekend_prefs
 from desk.engine.gates_eval import net_edge, net_edge_entry
 from desk.engine.strategies import all_pass, gate_sides
 from desk.engine.tunable import merge_params
@@ -120,7 +121,9 @@ def build_asset(
     edge_up_entry = net_edge_entry(p_up, market.get("yes_ask"), fee_one)
     edge_down_entry = net_edge_entry(None if p_up is None else 1 - p_up, market.get("no_ask"), fee_one)
     paper_modes = load_paper_modes(settings or {})
+    weekend_prefs = load_weekend_prefs(settings or {})
     edge_basis = paper_modes.get("edge_basis", "net") if strat.get("id") == "gates_15m" else "net"
+    weekend_flag = is_weekend(now, weekend_prefs["timezone"])
     yes_mid = None
     if market.get("yes_bid") is not None and market.get("yes_ask") is not None:
         yes_mid = (market["yes_bid"] + market["yes_ask"]) / 2
@@ -159,6 +162,7 @@ def build_asset(
         momentum_60=momentum_60,
         signal_hold_secs=signal_hold_secs,
         edge_basis=edge_basis,
+        is_weekend=weekend_flag,
     )
     locked = [c for c in gates.get("UP", []) if c.get("locked")]
     gate_summary = None

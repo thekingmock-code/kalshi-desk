@@ -6,6 +6,7 @@ from desk.engine.weekend_money import (
     ENTRY_SECS_MAX,
     ENTRY_SECS_MIN,
     SAFEGUARD_SECS,
+    g4_requirements,
     required_prob_edge_cents,
     weekend_checks,
 )
@@ -78,3 +79,13 @@ def test_dynamic_edge_tightens_late():
     early = required_prob_edge_cents(_ctx(secs_left=700))
     late = required_prob_edge_cents(_ctx(secs_left=100))
     assert late > early
+
+
+def test_weekend_bump_adds_to_g4_required():
+    ctx = _ctx(is_weekend=True, params={**_ctx().params, "weekend_bump_cents": 2.0})
+    total, base, bump = g4_requirements(ctx)
+    assert bump == 2.0
+    assert total == base + 2.0
+    checks = weekend_checks(_ctx(is_weekend=True, prob=0.50, p_up=0.50, yes_mid=0.47, params={**_ctx().params, "weekend_bump_cents": 2.0}))
+    g4 = [c for c in checks if c["label"] == "G4 Prob edge"][0]
+    assert "weekend 2.0¢" in g4["detail"]

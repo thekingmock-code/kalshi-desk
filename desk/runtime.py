@@ -32,6 +32,12 @@ from desk.engine.edge_modes import (
     paper_trade_analytics,
     resolve_gate_mode,
 )
+from desk.engine.weekend_money import (
+    WEEKEND_PREFS_KEY,
+    is_weekend,
+    load_weekend_prefs,
+    weekend_bump_for_params,
+)
 from desk.engine.paper import can_paper_enter, paper_buy, side_to_yes
 from desk.engine.shadow import (
     calibration,
@@ -298,6 +304,7 @@ class Desk:
             "paper_orders": stamp_rows(self.store.paper_orders()),
             "rules": self.cfg["suggest"],
             "paper_modes": paper_modes,
+            "weekend_prefs": load_weekend_prefs(saved) if paper_on else {"timezone": "America/New_York"},
             "paper_analytics": paper_trade_analytics(self.store.paper_trades()) if paper_on else None,
         }
 
@@ -418,24 +425,33 @@ class Desk:
             return
         if pos and pos.paper and pos.ticker == ticker and side_to_yes(detail) != pos.side:
             return
-        entry_log = None
-        if strategy.get("id") == "gates_15m":
-            modes = load_paper_modes(self.store.settings())
-            mkt = view.get("market") or {}
-            bot = view.get("bot") or {}
-            trade = view.get("trade") or {}
-            entry_log = entry_snapshot(
-                side=detail,
-                bot=bot,
-                market=mkt,
-                p_up=bot.get("p_up"),
-                yes_mid=mkt.get("yes_mid"),
-                no_mid=mkt.get("no_mid"),
-                secs_left=trade.get("secs_left"),
-                fee_fn=lambda p: fee_dollars(1, p, rate),
-                modes=modes,
-                gate_mode=resolve_gate_mode(modes),
-            )
+        settings = self.store.settings()
+        prefs = load_weekend_prefs(settings)
+        is_wk = is_weekend(now, prefs["timezone"])
+        modes = load_paper_modes(settings)
+        params = view.get("tunable_params") or strategy.get("params") or {}
+        bump = (
+            weekend_bump_for_params(params, is_weekend_flag=is_wk)
+            if strategy.get("id") == "weekend_money"
+            else 0.0
+        )
+        gate_mode = resolve_gate_mode(modes) if strategy.get("id") == "gates_15m" else "normal"
+        mkt = view.get("market") or {}
+        bot = view.get("bot") or {}
+        trade = view.get("trade") or {}
+        entry_log = entry_snapshot(
+            side=detail,
+            bot=bot,
+            market=mkt,
+            p_up=bot.get("p_up"),
+            yes_mid=mkt.get("yes_mid"),
+            no_mid=mkt.get("no_mid"),
+            secs_left=trade.get("secs_left"),
+            fee_fn=lambda p: fee_dollars(1, p, rate),
+            gate_mode=gate_mode,
+            is_weekend=is_wk,
+            weekend_bump_applied=bump,
+        )
         paper_buy(
             st=st,
             view=view,
@@ -1194,6 +1210,13 @@ class Desk:
         window = float(self.cfg["feeds"]["momentum_window_secs"])
         return self._momentum_secs(st, now, price, window)
 
+    def update_weekend_prefs(self, *, timezone: str | None = None) -> dict:
+        prefs = load_weekend_prefs(self.store.settings())
+        if timezone is not None:
+            prefs["timezone"] = timezone if timezone in ("America/New_York", "UTC") else prefs["timezone"]
+        self.store.save_setting(WEEKEND_PREFS_KEY, prefs)
+        return {"ok": True, "state": self.snapshot()}
+
     def update_paper_modes(
         self,
         *,
@@ -1229,8 +1252,11 @@ class Desk:
         paper_ignore_edge_gate: bool | None = None,
         paper_fade_model: bool | None = None,
         paper_fade_trigger_cents: float | None = None,
+        weekend_timezone: str | None = None,
     ) -> dict:
         now = time.time()
+        if weekend_timezone is not None:
+            return self.update_weekend_prefs(timezone=weekend_timezone)
         if any(
             x is not None
             for x in (

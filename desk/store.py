@@ -129,6 +129,15 @@ class Store:
             """
         )
         self.conn.commit()
+        for ddl in (
+            "ALTER TABLE paper_trades ADD COLUMN is_weekend INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paper_trades ADD COLUMN weekend_bump_applied REAL NOT NULL DEFAULT 0",
+        ):
+            try:
+                self.conn.execute(ddl)
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass
 
     def seen_fill(self, fill_id: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM fills_seen WHERE fill_id = ?", (fill_id,)).fetchone()
@@ -314,8 +323,8 @@ class Store:
             """
             INSERT INTO paper_trades (
               ts, asset, ticker, side, gate_mode, edge_net, edge_entry, raw_prob_edge,
-              edge_bucket, p_up, ask, fee, spread, secs_left
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              edge_bucket, p_up, ask, fee, spread, secs_left, is_weekend, weekend_bump_applied
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("ts", time.time()),
@@ -332,6 +341,8 @@ class Store:
                 row.get("fee"),
                 row.get("spread"),
                 row.get("secs_left"),
+                1 if row.get("is_weekend") else 0,
+                float(row.get("weekend_bump_applied") or 0),
             ),
         )
         self.conn.commit()

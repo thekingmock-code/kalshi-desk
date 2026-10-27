@@ -261,6 +261,7 @@
       <h2>STRATEGY</h2>
       <div id="stabs" class="stabs"></div>
       <div id="paperModes" class="paper-modes" hidden></div>
+      <div id="weekendPrefs" class="paper-modes" hidden></div>
       <div id="sliders"></div>
       <div id="exits" class="muted"></div>
       <div id="gates" class="sides"></div>
@@ -821,6 +822,7 @@ function renderStrategy(state, view) {
   const spec = (state.strategies || []).find((s) => s.id === state.active);
   if (!spec) return;
   buildPaperModes(state);
+  buildWeekendPrefs(state);
   const params = view.tunable_params || spec.params || {};
   const sig = state.active + ":" + asset + ":" + JSON.stringify(params);
   const focused = document.activeElement && document.activeElement.closest("#sliders");
@@ -926,6 +928,34 @@ function renderStrategy(state, view) {
     }
     gates.appendChild(col);
   }
+}
+
+function buildWeekendPrefs(state) {
+  const root = document.getElementById("weekendPrefs");
+  if (!root) return;
+  root.replaceChildren();
+  if (state.active !== "weekend_money" || state.observe_only) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+  const h = document.createElement("h3");
+  h.textContent = "WEEKEND G4";
+  root.appendChild(h);
+  const prefs = state.weekend_prefs || { timezone: "America/New_York" };
+  const row = document.createElement("label");
+  row.className = "toggle";
+  const sel = document.createElement("select");
+  for (const opt of [["America/New_York", "Weekend timezone: America/New_York"], ["UTC", "Weekend timezone: UTC"]]) {
+    const o = document.createElement("option");
+    o.value = opt[0];
+    o.textContent = opt[1];
+    if ((prefs.timezone || "America/New_York") === opt[0]) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => postJSON("/api/settings", { weekend_timezone: sel.value });
+  row.appendChild(sel);
+  root.appendChild(row);
 }
 
 function buildPaperModes(state) {
@@ -1053,15 +1083,31 @@ function renderJournal(state) {
       h.className = "muted";
       h.textContent = "Paper analytics (logged entries)";
       pa.appendChild(h);
+      if (an.by_period) {
+        for (const label of ["weekday", "weekend"]) {
+          const row = an.by_period[label];
+          if (!row || !row.count) continue;
+          const cell = document.createElement("div");
+          cell.innerHTML = "<div class=\"muted\">All · " + label + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
+          pa.appendChild(cell);
+        }
+      }
       for (const [bucket, row] of Object.entries(an.by_edge_bucket)) {
         if (!row.count) continue;
         const cell = document.createElement("div");
-        cell.innerHTML = "<div class=\"muted\">Edge " + bucket + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
+        let extra = "";
+        if (row.weekday?.count) extra += " · wd " + row.weekday.count;
+        if (row.weekend?.count) extra += " · we " + row.weekend.count;
+        cell.innerHTML = "<div class=\"muted\">Edge " + bucket + extra + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
         pa.appendChild(cell);
       }
       for (const [mode, row] of Object.entries(an.by_gate_mode || {})) {
+        if (!row.count) continue;
         const cell = document.createElement("div");
-        cell.innerHTML = "<div class=\"muted\">Mode " + mode + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
+        let extra = "";
+        if (row.weekday?.count) extra += " · wd " + row.weekday.count;
+        if (row.weekend?.count) extra += " · we " + row.weekend.count;
+        cell.innerHTML = "<div class=\"muted\">Mode " + mode + extra + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
         pa.appendChild(cell);
       }
     }

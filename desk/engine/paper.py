@@ -335,5 +335,7 @@ def paper_buy(
             fee=entry_log.get("fee"),
             spread=entry_log.get("spread"),
             secs_left=entry_log.get("secs_left"),
+            is_weekend=entry_log.get("is_weekend"),
+            weekend_bump_applied=entry_log.get("weekend_bump_applied"),
         )
     return pos

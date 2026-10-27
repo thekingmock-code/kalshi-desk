@@ -179,8 +179,9 @@ def entry_snapshot(
     no_mid: float | None,
     secs_left: float | None,
     fee_fn,
-    modes: dict,
     gate_mode: str,
+    is_weekend: bool = False,
+    weekend_bump_applied: float = 0.0,
 ) -> dict:
     ask = market.get("yes_ask") if side == "UP" else market.get("no_ask")
     bid = market.get("yes_bid") if side == "UP" else market.get("no_bid")
@@ -200,6 +201,8 @@ def entry_snapshot(
         "fee": fee,
         "spread": spread,
         "secs_left": secs_left,
+        "is_weekend": bool(is_weekend),
+        "weekend_bump_applied": float(weekend_bump_applied),
     }
 
 
@@ -216,6 +219,21 @@ def edge_bucket_cents(edge_net: float | None) -> str:
     return "2plus"
 
 
+def _stats(subset: list[dict]) -> dict:
+    if not subset:
+        return {"count": 0, "win_rate": None, "net_pnl": 0.0}
+    wins = sum(1 for r in subset if (r.get("net_pnl") or 0) > 0 or r.get("right"))
+    return {
+        "count": len(subset),
+        "win_rate": wins / len(subset),
+        "net_pnl": sum((r.get("net_pnl") or 0) for r in subset),
+    }
+
+
+def _weekend_period(r: dict) -> str:
+    return "weekend" if r.get("is_weekend") else "weekday"
+
+
 def paper_trade_analytics(rows: list[dict]) -> dict:
     settled = [r for r in rows if r.get("settled") and r.get("net_pnl") is not None]
 
@@ -227,14 +245,17 @@ def paper_trade_analytics(rows: list[dict]) -> dict:
         out = {}
         for name, subset in buckets.items():
             if not subset:
-                out[name] = {"count": 0, "win_rate": None, "net_pnl": 0.0}
+                out[name] = {
+                    "count": 0,
+                    "win_rate": None,
+                    "net_pnl": 0.0,
+                    "weekday": _stats([]),
+                    "weekend": _stats([]),
+                }
                 continue
-            wins = sum(1 for r in subset if (r.get("net_pnl") or 0) > 0 or r.get("right"))
-            out[name] = {
-                "count": len(subset),
-                "win_rate": wins / len(subset),
-                "net_pnl": sum((r.get("net_pnl") or 0) for r in subset),
-            }
+            wd = [r for r in subset if _weekend_period(r) == "weekday"]
+            we = [r for r in subset if _weekend_period(r) == "weekend"]
+            out[name] = {**_stats(subset), "weekday": _stats(wd), "weekend": _stats(we)}
         return out
 
     by_edge = bucket_stats("edge_bucket")
@@ -244,12 +265,14 @@ def paper_trade_analytics(rows: list[dict]) -> dict:
         by_mode.setdefault(m, []).append(r)
     mode_stats = {}
     for m, subset in by_mode.items():
-        wins = sum(1 for r in subset if (r.get("net_pnl") or 0) > 0)
-        mode_stats[m] = {
-            "count": len(subset),
-            "win_rate": wins / len(subset) if subset else None,
-            "net_pnl": sum((r.get("net_pnl") or 0) for r in subset),
-        }
+        wd = [r for r in subset if _weekend_period(r) == "weekday"]
+        we = [r for r in subset if _weekend_period(r) == "weekend"]
+        mode_stats[m] = {**_stats(subset), "weekday": _stats(wd), "weekend": _stats(we)}
+
+    by_period = {
+        "weekday": _stats([r for r in settled if _weekend_period(r) == "weekday"]),
+        "weekend": _stats([r for r in settled if _weekend_period(r) == "weekend"]),
+    }
 
     cal: dict[str, dict] = {}
     for r in settled:
@@ -293,4 +316,9 @@ def paper_trade_analytics(rows: list[dict]) -> dict:
         pts = sums.get(row["bucket"], [])
         row["avg_p_up"] = sum(pts) / len(pts) if pts else None
 
-    return {"by_edge_bucket": by_edge, "by_gate_mode": mode_stats, "calibration": cal_table}
+    return {
+        "by_edge_bucket": by_edge,
+        "by_gate_mode": mode_stats,
+        "by_period": by_period,
+        "calibration": cal_table,
+    }
