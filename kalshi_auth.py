@@ -15,22 +15,38 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
+def _placeholder_key(api_key_id: str | None) -> bool:
+    if not api_key_id or not str(api_key_id).strip():
+        return True
+    v = str(api_key_id).strip().lower()
+    return "your-api" in v or v in ("none", "changeme", "xxx")
+
+
+def _usable_key_path(path: str | None) -> bool:
+    if not path or not str(path).strip():
+        return False
+    p = str(path).strip()
+    if "/path/to" in p or "example" in p.lower():
+        return False
+    return os.path.isfile(p)
+
+
 def load_private_key_from_env() -> tuple[str | None, Any | None]:
     """Return (api_key_id, private_key) from env, or (None, None) if unset."""
     api_key_id = os.environ.get("KALSHI_ACCESS_KEY") or os.environ.get(
         "KALSHI_API_KEY_ID"
     )
+    if _placeholder_key(api_key_id):
+        return None, None
     pem = os.environ.get("KALSHI_PRIVATE_KEY")
     path = os.environ.get("KALSHI_PRIVATE_KEY_PATH")
-    if not api_key_id:
-        return None, None
-    if pem:
+    if pem and "BEGIN" in pem:
         pem_bytes = pem.replace("\\n", "\n").encode("utf-8")
-    elif path:
+    elif _usable_key_path(path):
         with open(path, "rb") as f:
             pem_bytes = f.read()
     else:
-        return api_key_id, None
+        return None, None
     key = serialization.load_pem_private_key(
         pem_bytes, password=None, backend=default_backend()
     )

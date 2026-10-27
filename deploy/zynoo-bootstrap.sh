@@ -48,8 +48,12 @@ python3 -m venv .venv
 ./.venv/bin/pip install -U pip -q
 ./.venv/bin/pip install -r requirements.txt -q
 
-if [[ ! -f .env ]] && [[ -f .env.example ]]; then
-  cp .env.example .env
+if [[ ! -f .env ]]; then
+  cat > .env <<'EOF'
+# Optional: Kalshi RTI index + live positions (paper works without these)
+# KALSHI_ACCESS_KEY=
+# KALSHI_PRIVATE_KEY_PATH=
+EOF
 fi
 
 # systemd — desk on localhost only
