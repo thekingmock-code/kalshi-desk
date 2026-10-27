@@ -55,6 +55,7 @@ chop:
 
 paper:
   enabled: true
+  starting_balance: 1000
   max_entries_per_market: 1
   contracts: 1
   entry_cooldown_secs: 30

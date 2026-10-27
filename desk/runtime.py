@@ -24,6 +24,7 @@ from desk.engine.tunable import (
 )
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
+from desk.engine.balances import paper_summary, parse_kalshi_balance
 from desk.engine.edge_modes import (
     PAPER_SETTINGS_KEY,
     default_paper_modes,
@@ -110,6 +111,7 @@ class Desk:
         self._tasks: list[asyncio.Task] = []
         self._seeded = False
         self._lock = asyncio.Lock()
+        self._account_balance: dict | None = None
 
     async def start(self) -> None:
         paper_on = bool((self.cfg.get("paper") or {}).get("enabled"))
@@ -191,11 +193,13 @@ class Desk:
                     )
                 positions = await asyncio.to_thread(kalshi.fetch_positions, key_id, private_key)
                 fills = await asyncio.to_thread(kalshi.fetch_fills, key_id, private_key)
+                balance_body = await asyncio.to_thread(kalshi.fetch_balance, key_id, private_key)
                 async with self._lock:
                     now = time.time()
                     for name, price in indexes.items():
                         if price and price > 0:
                             self.assets[name].index = (price, now)
+                    self._account_balance = parse_kalshi_balance(balance_body)
                     self._apply_account(positions, fills, now)
                     self.authed = True
                     if bool((self.cfg.get("paper") or {}).get("enabled")):
@@ -234,6 +238,37 @@ class Desk:
 
     def snapshot(self) -> dict:
         return self._payload(time.time())
+
+    def _balances_header(self, assets: dict, journal_rows: list[dict]) -> dict:
+        paper_cfg = self.cfg.get("paper") or {}
+        start = float(paper_cfg.get("starting_balance", 1000.0))
+        mark_pnls: list[float] = []
+        for built in assets.values():
+            trade = built.get("trade") or {}
+            if trade.get("paper") and not trade.get("flat") and trade.get("pnl") is not None:
+                mark_pnls.append(float(trade["pnl"]))
+        paper = paper_summary(
+            starting_balance=start,
+            journal_rows=journal_rows,
+            open_mark_pnls=mark_pnls,
+        )
+        acct = self._account_balance or {}
+        return {
+            "account": {
+                "available": acct.get("available"),
+                "portfolio_value": acct.get("portfolio_value"),
+                "ok": self.authed and acct.get("available") is not None,
+            },
+            "paper": {
+                "equity": paper["equity"],
+                "starting_balance": paper["starting_balance"],
+            },
+            "pnl": {
+                "total": paper["total_pnl"],
+                "realized": paper["realized_pnl"],
+                "unrealized": paper["unrealized_pnl"],
+            },
+        }
 
     def _payload(self, now: float) -> dict:
         btc_mom = self._momentum(self.assets.get("BTC"), now, self._composite(self.assets.get("BTC"), now)[0] if self.assets.get("BTC") else None) if self.assets.get("BTC") else None
@@ -306,6 +341,7 @@ class Desk:
             "paper_modes": paper_modes,
             "weekend_prefs": load_weekend_prefs(saved) if paper_on else {"timezone": "America/New_York"},
             "paper_analytics": paper_trade_analytics(self.store.paper_trades()) if paper_on else None,
+            "balances": self._balances_header(assets, rows),
         }
 
     def _sample(self, now: float) -> None:

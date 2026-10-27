@@ -167,6 +167,11 @@ def fetch_positions(api_key_id: str, private_key) -> list[dict]:
     return [r for r in rows if isinstance(r, dict)]
 
 
+def fetch_balance(api_key_id: str, private_key) -> dict:
+    body = kalshi_get(api_base(), api_key_id, private_key, "/portfolio/balance")
+    return body
+
+
 def fetch_fills(api_key_id: str, private_key, limit: int = 200) -> list[dict]:
     body = kalshi_get(
         api_base(),

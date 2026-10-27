@@ -42,6 +42,22 @@
   .page { width: min(520px, 100%); }
   .top { background: var(--bg); }
   header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; }
+  .balance-bar {
+    flex: 1 0 100%;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 4px;
+  }
+  .balance-cell {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 8px;
+    min-width: 0;
+  }
+  .balance-cell .lbl { font-size: 9px; letter-spacing: 0.1em; color: var(--muted); text-transform: uppercase; }
+  .balance-cell .val { font-size: 13px; font-weight: 700; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .brand { font-weight: 800; letter-spacing: 0.08em; color: var(--gold); white-space: nowrap; margin-right: auto; }
   .brand span { color: var(--ink); font-weight: 600; }
   #clock { flex: 1 0 100%; margin: 0; color: var(--muted); font-size: 12px; }
@@ -247,6 +263,7 @@
       <div id="clock">—</div>
       <div id="linkStatus" class="muted" style="font-size:10px;margin-top:4px">Connecting…</div>
       <button id="theme" class="ghost" type="button">Light</button>
+      <div id="balanceBar" class="balance-bar" aria-label="Balances"></div>
     </header>
     <p id="note" class="note" hidden></p>
   </div>
@@ -370,6 +387,38 @@ function line(label, value) {
   return row;
 }
 
+function moneyTop(n) {
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  return "$" + Number(n).toFixed(2);
+}
+
+function renderBalanceBar(state) {
+  const bar = document.getElementById("balanceBar");
+  if (!bar) return;
+  bar.replaceChildren();
+  const b = state.balances || {};
+  const acct = b.account || {};
+  const paper = b.paper || {};
+  const pnl = b.pnl || {};
+  const cells = [
+    ["Account", acct.ok ? moneyTop(acct.available) : (state.authed ? "—" : "No keys")],
+    ["Paper", moneyTop(paper.equity)],
+    ["P&L", signedMoney(pnl.total ?? 0)],
+  ];
+  for (const [lbl, val] of cells) {
+    const cell = document.createElement("div");
+    cell.className = "balance-cell";
+    const l = document.createElement("div");
+    l.className = "lbl";
+    l.textContent = lbl;
+    const v = document.createElement("div");
+    v.className = "val" + (lbl === "P&L" ? " " + pnlClass(pnl.total) : "");
+    v.textContent = val;
+    cell.append(l, v);
+    bar.appendChild(cell);
+  }
+}
+
 function setLinkStatus(text) {
   const el = document.getElementById("linkStatus");
   if (el) el.textContent = text;
@@ -380,6 +429,7 @@ function render(state) {
   if (!state || !state.assets) return;
   if (!state.assets[asset]) asset = (state.asset_order || assetOrder)[0];
   document.getElementById("clock").textContent = state.et || "";
+  renderBalanceBar(state);
   setLinkStatus((wsConnected ? "Live (WebSocket)" : "Live (HTTP poll)") + " · updated " + (state.et || "—"));
   const note = document.getElementById("note");
   const view0 = state.assets[asset];
