@@ -17,6 +17,20 @@ Open [http://127.0.0.1:43123](http://127.0.0.1:43123). The page loads `/api/stat
 python -m pytest desk/tests -q
 ```
 
+## Permanent dashboard (Ubuntu VPS)
+
+For 24/7 access without keeping a laptop on, deploy to an **Ubuntu 24.04 LTS** VPS and run the desk under **systemd**. Step-by-step: **[deploy/VPS.md](deploy/VPS.md)**.
+
+Quick path after `ssh ubuntu@YOUR_VPS_IP`:
+
+```bash
+git clone YOUR_REPO_URL ~/kalshi-desk
+cd ~/kalshi-desk
+REPO_URL=YOUR_REPO_URL bash deploy/install-vps.sh
+```
+
+Then put **Cloudflare Tunnel** (or nginx) in front of `http://127.0.0.1:43123` for a stable HTTPS URL on your phone.
+
 ## Kalshi index and positions
 
 Copy `.env.example` and export the variables. With a key, the desk reads the CF Benchmarks index through Kalshi (`BRTI`, `BNBUSD_RTI`, `SOLUSD_RTI`) and your open positions. Without a key it still runs: the reference price is the Coinbase + Kraken composite, lag is unknown, and the page says positions are unavailable.

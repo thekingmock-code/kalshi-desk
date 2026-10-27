@@ -1,0 +1,17 @@
+[Unit]
+Description=Kalshi 15m trade desk (uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/kalshi-desk
+EnvironmentFile=-/home/ubuntu/kalshi-desk/.env
+ExecStart=/home/ubuntu/kalshi-desk/.venv/bin/python -m uvicorn desk.app:app --host 127.0.0.1 --port 43123
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
