@@ -31,6 +31,8 @@ REPO_URL=YOUR_REPO_URL bash deploy/install-vps.sh
 
 Permanent HTTPS on your phone: **[deploy/CLOUDFLARE-TUNNEL.md](deploy/CLOUDFLARE-TUNNEL.md)** (buy domain on Cloudflare + free tunnel).
 
+**Minimal steps (Zynoo + mockkingdesk.com):** **[deploy/START-HERE.md](deploy/START-HERE.md)** — paste one script in the VPS console.
+
 ## Kalshi index and positions
 
 Copy `.env.example` and export the variables. With a key, the desk reads the CF Benchmarks index through Kalshi (`BRTI`, `BNBUSD_RTI`, `SOLUSD_RTI`) and your open positions. Without a key it still runs: the reference price is the Coinbase + Kraken composite, lag is unknown, and the page says positions are unavailable.
