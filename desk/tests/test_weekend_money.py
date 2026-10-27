@@ -41,13 +41,13 @@ def _ctx(**kw) -> GateContext:
             "ask_floor": 0.38,
             "ask_cap": 0.55,
             "spread_max": 0.03,
-            "entry_hold_secs": 5.0,
+            "entry_hold_secs": 2.0,
         },
         index_ok=True,
         lag=0.5,
         momentum_30=1,
         momentum_60=1,
-        signal_hold_secs=5.0,
+        signal_hold_secs=2.0,
     )
     base.update(kw)
     return GateContext(**base)

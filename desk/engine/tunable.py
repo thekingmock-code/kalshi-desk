@@ -79,7 +79,7 @@ WEEKEND_DEFAULTS: dict[str, dict[str, float]] = {
         "ask_floor": 0.38,
         "ask_cap": 0.55,
         "spread_max": 0.03,
-        "entry_hold_secs": 5.0,
+        "entry_hold_secs": 2.0,
     },
     "SOL": {
         "trend_sigma_min": 0.30,
@@ -87,7 +87,7 @@ WEEKEND_DEFAULTS: dict[str, dict[str, float]] = {
         "ask_floor": 0.38,
         "ask_cap": 0.55,
         "spread_max": 0.03,
-        "entry_hold_secs": 5.0,
+        "entry_hold_secs": 2.0,
     },
     "BNB": {
         "trend_sigma_min": 0.32,
@@ -95,7 +95,7 @@ WEEKEND_DEFAULTS: dict[str, dict[str, float]] = {
         "ask_floor": 0.40,
         "ask_cap": 0.55,
         "spread_max": 0.05,
-        "entry_hold_secs": 5.0,
+        "entry_hold_secs": 2.0,
     },
 }
 
@@ -147,7 +147,7 @@ def slider_defs(strategy_id: str, asset: str) -> list[dict]:
         elif strategy_id == "weekend_money" and key == "prob_edge_min_cents":
             lo, hi = 2.0, 8.0
         elif strategy_id == "weekend_money" and key == "entry_hold_secs":
-            lo, hi = 3.0, 15.0
+            lo, hi = 2.0, 15.0
         else:
             continue
         sliders.append(

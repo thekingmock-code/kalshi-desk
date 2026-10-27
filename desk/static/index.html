@@ -825,7 +825,7 @@ function renderStrategy(state, view) {
     bits.push("Breakeven after +" + unit(spec.params.breakeven_after, "cents"));
   }
   if (spec.kind === "weekend_money") {
-    bits.push("Weekend stack (G1 off) · 3m warmup · 2m close-out · 5s signal hold");
+    bits.push("Weekend stack (G1 off) · 3m warmup · 2m close-out · 2s signal hold");
     bits.push("38–55¢ ask band (per asset sliders)");
   } else if (spec.kind === "arb") {
     bits.push("Escape at " + unit(spec.params.escape_price, "cents") + " · hard cap " + unit(spec.params.hard_cap, "cents"));

@@ -19,7 +19,7 @@ SPREAD_DEFAULT = {"BTC": 0.03, "SOL": 0.03, "BNB": 0.05}
 ASK_FLOOR_DEFAULT = 0.38
 ASK_CAP_DEFAULT = 0.55
 MIN_ASK_NORMAL = 0.20
-SIGNAL_HOLD_SECS = 5.0
+SIGNAL_HOLD_SECS = 2.0
 
 
 def _mom_aligned(side: str, mom: int | None) -> bool:
