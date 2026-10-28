@@ -57,7 +57,7 @@ paper:
   enabled: true
   starting_balance: 1000
   max_entries_per_market: 1
-  contracts: 1
+  max_trade_usd: 20
   entry_cooldown_secs: 30
   require_gates: true
   min_net_edge_cents: 0

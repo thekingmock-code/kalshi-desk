@@ -259,6 +259,27 @@ def paper_entry_status(
     }
 
 
+def contracts_for_max_usd(max_usd: float, ask: float, taker_rate: float) -> float:
+    """Largest whole contract count with entry cost (ask + taker fee) <= max_usd."""
+    if ask is None or ask <= 0 or ask >= 1 or max_usd <= 0:
+        return 1.0
+    best = 0
+    for c in range(1, 5001):
+        cost = c * ask + fee_dollars(c, ask, taker_rate)
+        if cost <= max_usd + 1e-6:
+            best = c
+        else:
+            break
+    return float(max(best, 1))
+
+
+def paper_entry_contracts(cfg: dict, ask: float, taker_rate: float) -> float:
+    paper = cfg.get("paper") or {}
+    if paper.get("max_trade_usd") is not None:
+        return contracts_for_max_usd(float(paper["max_trade_usd"]), ask, taker_rate)
+    return float(paper.get("contracts", 1))
+
+
 def paper_buy(
     *,
     st,
@@ -275,7 +296,7 @@ def paper_buy(
     ask = ask_for_side(market, side)
     if ask is None:
         return None
-    contracts = float((cfg.get("paper") or {}).get("contracts", 1))
+    contracts = paper_entry_contracts(cfg, ask, taker_rate)
     fee = fee_dollars(contracts, ask, taker_rate)
     yes_no = side_to_yes(side)
     pos = st.book.position
