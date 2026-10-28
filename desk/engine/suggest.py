@@ -50,6 +50,9 @@ def decide(ctx: SuggestCtx, rules: dict, strategy: dict | None = None) -> tuple[
             reasons.append("observe only · no order")
         return "WAIT", reasons
 
+    if not rules.get("exits_enabled", True):
+        return "HOLD", ["Exits off · hold to 15m settlement"]
+
     loss_at = float(rules["exit_loss_frac"])
     if ctx.loss_frac >= loss_at:
         return "EXIT NOW", [f"loss {ctx.loss_frac * 100:.0f}% of cost"]

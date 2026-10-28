@@ -519,6 +519,14 @@ def journal_stats(rows: list[dict]) -> dict:
     }
 
 
+def _settle_outcome(side: str | None, right: bool | None) -> str | None:
+    if side is None or right is None:
+        return None
+    if side == "YES":
+        return "UP" if right else "DOWN"
+    return "DOWN" if right else "UP"
+
+
 def fill_journal_rows_for_ui(rows: list[dict]) -> list[dict]:
     """Closed simulated fills from the journal table."""
     out = []
@@ -529,18 +537,25 @@ def fill_journal_rows_for_ui(rows: list[dict]) -> list[dict]:
         pick = _shadow_direction(r.get("side"))
         pnl = r.get("net_pnl")
         right = r.get("right")
-        if right is None and pnl is not None:
+        if right is not None:
+            right = bool(right)
+        elif pnl is not None:
             right = pnl > 0
+        exit_px = r.get("exit_px")
+        if exit_px is None:
+            exit_px = r.get("exit")
+        outcome = _settle_outcome(r.get("side"), right)
+        dir_ok = None if pick is None or outcome is None else pick == outcome
         item = {
             "ts": r.get("ts"),
             "et": r.get("et"),
             "asset": r.get("asset"),
             "side": r.get("side"),
             "direction": pick,
-            "outcome": None,
-            "dir_ok": None if right is None else bool(right),
+            "outcome": outcome,
+            "dir_ok": dir_ok,
             "entry": r.get("entry"),
-            "exit_px": r.get("exit"),
+            "exit_px": exit_px,
             "contracts": r.get("contracts"),
             "net_pnl": pnl,
             "right": right,
@@ -549,7 +564,7 @@ def fill_journal_rows_for_ui(rows: list[dict]) -> list[dict]:
             "p_up": None,
             "strike": None,
             "ticker": r.get("ticker"),
-            "pending": False,
+            "pending": pnl is None and right is None,
         }
         if item["ts"] and not item["et"]:
             item["et"] = et_stamp(float(item["ts"]))

@@ -430,24 +430,7 @@ class Desk:
         cooldown_ok = now - st.last_paper_entry >= cooldown
 
         if pos and pos.paper and pos.ticker == ticker:
-            action = view["suggestion"]["action"]
-            if action == "EXIT NOW":
-                self._paper_close(st, pos, now, rate)
-                return
-            if action == "REVERSE":
-                old = pos.side
-                self._paper_close(st, pos, now, rate)
-                buys = self._paper_buys(st)
-                other = "DOWN" if old == "YES" else "UP"
-                view = self._preview(st, now, strategy, buys)
-                if (
-                    buys < max_e
-                    and cooldown_ok
-                    and all_pass((view.get("gates") or {}).get(other) or [])
-                ):
-                    paper_buy(st=st, view=view, side=other, now=now, cfg=self.cfg, store=self.store, taker_rate=rate)
-                    st.last_paper_entry = now
-                return
+            return
 
         has_live = pos is not None and not pos.paper
         ok, detail = can_paper_enter(

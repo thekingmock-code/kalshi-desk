@@ -22,8 +22,18 @@ def test_tie_resolves_yes():
     assert resolves_yes(99.0, 100.0) is False
 
 
+def test_exits_disabled_holds_to_settlement():
+    rules = {**CFG["suggest"], "exits_enabled": False}
+    action, reasons = decide(
+        SuggestCtx(in_trade=True, loss_frac=0.99, held_bid=0.10, secs_left=10, held_for=999),
+        rules,
+    )
+    assert action == "HOLD"
+    assert any("settlement" in r.lower() for r in reasons)
+
+
 def test_bank_95c_with_60s_left_exits():
-    rules = CFG["suggest"]
+    rules = {**CFG["suggest"], "exits_enabled": True}
     assert rules["bank_price"] == 0.95
     assert rules["bank_secs_left"] == 45
     action, _ = decide(
@@ -34,7 +44,7 @@ def test_bank_95c_with_60s_left_exits():
 
 
 def test_loss_of_exactly_42_percent_exits():
-    rules = CFG["suggest"]
+    rules = {**CFG["suggest"], "exits_enabled": True}
     assert rules["exit_loss_frac"] == 0.42
     action, _ = decide(
         SuggestCtx(in_trade=True, loss_frac=0.42, held_bid=0.40, secs_left=200, held_for=1),

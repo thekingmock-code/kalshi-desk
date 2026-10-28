@@ -207,7 +207,7 @@ def paper_entry_status(
     if not trade.get("flat"):
         if trade.get("paper"):
             base["status"] = "holding"
-            base["reason"] = f"In paper {trade.get('direction') or 'position'} — exits follow suggestion"
+            base["reason"] = f"In paper {trade.get('direction') or 'position'} — hold to settlement (exits off)"
             base["favored"] = trade.get("direction")
             return base
         if has_live_position or trade.get("mode") == "live":

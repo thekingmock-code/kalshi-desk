@@ -716,7 +716,11 @@ function renderTrade(view, state) {
     pos.appendChild(line("Ticker", trade.ticker || m.ticker || "—"));
     pos.appendChild(line("Held", dur(trade.held_for) + " · " + left(trade.secs_left) + " on market"));
     pos.appendChild(line("Entry", cents(trade.entry) + " · " + (trade.contracts ?? "—") + " ct"));
-    pos.appendChild(line("Bid now", cents(trade.bid) + " (exit) · ask " + cents(trade.ask)));
+    const exitsOff = state?.rules?.exits_enabled === false && trade.paper;
+    const bidLine = exitsOff
+      ? "Bid " + cents(trade.bid) + " · mark only (hold to settlement)"
+      : cents(trade.bid) + " (exit) · ask " + cents(trade.ask);
+    pos.appendChild(line("Bid now", bidLine));
     pos.appendChild(line("Cost / value", (trade.cost == null ? "—" : "$" + Number(trade.cost).toFixed(2)) + " → " + (trade.value == null ? "—" : "$" + Number(trade.value).toFixed(2))));
     const pnlRow = line("Mark P&L", signedMoney(trade.pnl));
     pnlRow.lastChild.className = pnlClass(trade.pnl);
@@ -883,22 +887,25 @@ function renderStrategy(state, view) {
   const exits = document.getElementById("exits");
   exits.replaceChildren();
   const rules = state.rules || {};
-  const bits = [
-    "Hard stop " + Math.round((rules.exit_loss_frac || 0) * 100) + "% of cost",
-    "Bank at " + cents(rules.bank_price) + " with more than " + rules.bank_secs_left + "s left",
-    "Entry grace " + rules.entry_grace_secs + "s",
-    "Reverse if the other side is " + Math.round((rules.reverse_prob || 0) * 100) + "%+, at least " + rules.reverse_secs_left + "s left, price at or under " + cents(rules.reverse_price_max),
-    "Exit a wrong side under " + Math.round((rules.recover_prob || 0) * 100) + "% recover",
-    "Take profit on a right side under " + Math.round((rules.thin_prob || 0) * 100) + "%"
-  ];
-  if (spec.kind === "gates" || spec.kind === "weekend_money") {
-    bits.push("Trail " + unit(spec.params.trail_retrace, "percent") + " off the high");
-    bits.push("Breakeven after +" + unit(spec.params.breakeven_after, "cents"));
+  const bits = [];
+  if (rules.exits_enabled === false) {
+    bits.push("Exits disabled · paper holds to 15m settlement (0¢ or 100¢)");
+  } else {
+    bits.push("Hard stop " + Math.round((rules.exit_loss_frac || 0) * 100) + "% of cost");
+    bits.push("Bank at " + cents(rules.bank_price) + " with more than " + rules.bank_secs_left + "s left");
+    bits.push("Entry grace " + rules.entry_grace_secs + "s");
+    bits.push("Reverse if the other side is " + Math.round((rules.reverse_prob || 0) * 100) + "%+, at least " + rules.reverse_secs_left + "s left, price at or under " + cents(rules.reverse_price_max));
+    bits.push("Exit a wrong side under " + Math.round((rules.recover_prob || 0) * 100) + "% recover");
+    bits.push("Take profit on a right side under " + Math.round((rules.thin_prob || 0) * 100) + "%");
+    if (spec.kind === "gates" || spec.kind === "weekend_money") {
+      bits.push("Trail " + unit(spec.params.trail_retrace, "percent") + " off the high");
+      bits.push("Breakeven after +" + unit(spec.params.breakeven_after, "cents"));
+    }
   }
   if (spec.kind === "weekend_money") {
     bits.push("Weekend stack (G1 off) · 3m warmup · 2m close-out · 2s signal hold");
     bits.push("38–55¢ ask band (per asset sliders)");
-  } else if (spec.kind === "arb") {
+  } else if (spec.kind === "arb" && rules.exits_enabled !== false) {
     bits.push("Escape at " + unit(spec.params.escape_price, "cents") + " · hard cap " + unit(spec.params.hard_cap, "cents"));
     bits.push("Reversal guard exits a wrong-side arb");
   } else if (spec.kind === "hour") {
@@ -1211,7 +1218,7 @@ function renderJournal(state) {
   }
   for (const row of rows) {
     const tr = document.createElement("tr");
-    let result = "OPEN";
+    let result = "PENDING";
     if (!row.pending) result = row.right ? "WIN" : "LOSS";
     let dirOk = "—";
     if (!row.pending && row.dir_ok != null) dirOk = row.dir_ok ? "YES" : "NO";

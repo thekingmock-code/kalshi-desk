@@ -65,6 +65,7 @@ paper:
   require_lag_side: false
 
 suggest:
+  exits_enabled: false
   exit_loss_frac: 0.42
   bank_price: 0.95
   bank_secs_left: 45
