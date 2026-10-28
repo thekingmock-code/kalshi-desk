@@ -26,6 +26,7 @@ def default_paper_modes() -> dict:
         "ignore_edge_gate": False,
         "fade_model": False,
         "fade_trigger_cents": 10.0,
+        "momentum_gate_enabled": True,
     }
 
 
@@ -42,6 +43,7 @@ def load_paper_modes(settings: dict) -> dict:
     out["fade_trigger_cents"] = float(out["fade_trigger_cents"])
     out["ignore_edge_gate"] = bool(out["ignore_edge_gate"])
     out["fade_model"] = bool(out["fade_model"])
+    out["momentum_gate_enabled"] = bool(out.get("momentum_gate_enabled", True))
     out["min_net_edge_cents"] = max(-10.0, min(10.0, out["min_net_edge_cents"]))
     out["fade_trigger_cents"] = max(1.0, min(30.0, out["fade_trigger_cents"]))
     return out
@@ -182,6 +184,9 @@ def entry_snapshot(
     gate_mode: str,
     is_weekend: bool = False,
     weekend_bump_applied: float = 0.0,
+    strategy_id: str | None = None,
+    hour_et: int | None = None,
+    session: str | None = None,
 ) -> dict:
     ask = market.get("yes_ask") if side == "UP" else market.get("no_ask")
     bid = market.get("yes_bid") if side == "UP" else market.get("no_bid")
@@ -203,6 +208,9 @@ def entry_snapshot(
         "secs_left": secs_left,
         "is_weekend": bool(is_weekend),
         "weekend_bump_applied": float(weekend_bump_applied),
+        "strategy": strategy_id,
+        "hour_et": hour_et,
+        "session": session,
     }
 
 
@@ -316,9 +324,30 @@ def paper_trade_analytics(rows: list[dict]) -> dict:
         pts = sums.get(row["bucket"], [])
         row["avg_p_up"] = sum(pts) / len(pts) if pts else None
 
+    def group_by(field: str) -> dict[str, dict]:
+        out: dict[str, list] = {}
+        for r in settled:
+            key = r.get(field)
+            if key is None or key == "":
+                key = "unknown"
+            out.setdefault(str(key), []).append(r)
+        return {k: _stats(v) for k, v in sorted(out.items())}
+
+    by_strategy = group_by("strategy")
+    by_session = group_by("session")
+    by_hour: dict[str, dict] = {}
+    for r in settled:
+        h = r.get("hour_et")
+        label = "unknown" if h is None else f"{int(h):02d}:00 ET"
+        by_hour.setdefault(label, []).append(r)
+    by_hour = {k: _stats(v) for k, v in sorted(by_hour.items())}
+
     return {
         "by_edge_bucket": by_edge,
         "by_gate_mode": mode_stats,
         "by_period": by_period,
+        "by_strategy": by_strategy,
+        "by_session": by_session,
+        "by_hour": by_hour,
         "calibration": cal_table,
     }

@@ -13,7 +13,7 @@ from desk.engine.edge_modes import load_paper_modes
 from desk.engine.weekend_money import is_weekend, load_weekend_prefs
 from desk.engine.gates_eval import net_edge, net_edge_entry
 from desk.engine.strategies import all_pass, gate_sides
-from desk.engine.tunable import merge_params
+from desk.engine.tunable import merge_params, shared_slider_defs, slider_defs
 from desk.engine.paper import paper_entry_status
 from desk.engine.suggest import SuggestCtx, decide
 
@@ -72,6 +72,7 @@ def build_asset(
     momentum_60: int | None = None,
     signal_hold_secs: float | None = None,
     settings: dict | None = None,
+    feed_ages: dict | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -124,6 +125,15 @@ def build_asset(
     weekend_prefs = load_weekend_prefs(settings or {})
     edge_basis = paper_modes.get("edge_basis", "net") if strat.get("id") == "gates_15m" else "net"
     weekend_flag = is_weekend(now, weekend_prefs["timezone"])
+    index_price = index if index_ok else None
+    ages = feed_ages or {}
+    cb_age = ages.get("coinbase")
+    kr_age = ages.get("kraken")
+    mom_gate = True
+    if strat.get("id") == "gates_15m":
+        mom_gate = bool(paper_modes.get("momentum_gate_enabled", True))
+    feed_fresh = bool(weekend_prefs.get("feed_freshness_enabled", True)) and strat.get("kind") == "weekend_money"
+    feed_max_age = float(weekend_prefs.get("feed_max_age_secs", 2.0))
     yes_mid = None
     if market.get("yes_bid") is not None and market.get("yes_ask") is not None:
         yes_mid = (market["yes_bid"] + market["yes_ask"]) / 2
@@ -163,6 +173,13 @@ def build_asset(
         signal_hold_secs=signal_hold_secs,
         edge_basis=edge_basis,
         is_weekend=weekend_flag,
+        composite=composite,
+        index_price=index_price,
+        coinbase_age=cb_age,
+        kraken_age=kr_age,
+        feed_freshness_enabled=feed_fresh,
+        feed_max_age_secs=feed_max_age,
+        momentum_gate_enabled=mom_gate,
     )
     locked = [c for c in gates.get("UP", []) if c.get("locked")]
     gate_summary = None
@@ -272,6 +289,7 @@ def build_asset(
         "locked_gates": locked,
         "gate_summary": gate_summary,
         "tunable_params": params,
+        "tunable_sliders": slider_defs(strat.get("id", "gates_15m"), asset) + shared_slider_defs(asset),
         "gauge": build_gauge(
             composite=composite,
             strike=strike,

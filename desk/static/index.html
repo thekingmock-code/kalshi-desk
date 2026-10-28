@@ -373,6 +373,7 @@ function unit(value, kind) {
   if (kind === "ratio") return n.toFixed(1) + "×";
   if (kind === "seconds") return Math.round(n) + "s";
   if (kind === "cents_raw") return Math.round(n) + "¢";
+  if (kind === "usd") return "$" + n.toFixed(2);
   return String(Math.round(n));
 }
 function line(label, value) {
@@ -878,11 +879,12 @@ function renderStrategy(state, view) {
   buildPaperModes(state);
   buildWeekendPrefs(state);
   const params = view.tunable_params || spec.params || {};
+  const sliderSpec = { ...spec, sliders: view.tunable_sliders || spec.sliders || [] };
   const sig = state.active + ":" + asset + ":" + JSON.stringify(params);
   const focused = document.activeElement && document.activeElement.closest("#sliders");
   if (sig !== sliderSig && !focused) {
     sliderSig = sig;
-    buildSliders(spec, params);
+    buildSliders(sliderSpec, params);
   }
   const exits = document.getElementById("exits");
   exits.replaceChildren();
@@ -997,9 +999,9 @@ function buildWeekendPrefs(state) {
   }
   root.hidden = false;
   const h = document.createElement("h3");
-  h.textContent = "WEEKEND G4";
+  h.textContent = "WEEKEND MONEY";
   root.appendChild(h);
-  const prefs = state.weekend_prefs || { timezone: "America/New_York" };
+  const prefs = state.weekend_prefs || { timezone: "America/New_York", feed_freshness_enabled: true, feed_max_age_secs: 2 };
   const row = document.createElement("label");
   row.className = "toggle";
   const sel = document.createElement("select");
@@ -1013,6 +1015,34 @@ function buildWeekendPrefs(state) {
   sel.onchange = () => postJSON("/api/settings", { weekend_timezone: sel.value });
   row.appendChild(sel);
   root.appendChild(row);
+
+  const feedToggle = document.createElement("label");
+  feedToggle.className = "toggle";
+  const feedCb = document.createElement("input");
+  feedCb.type = "checkbox";
+  feedCb.checked = prefs.feed_freshness_enabled !== false;
+  feedCb.onchange = () => postJSON("/api/settings", { weekend_feed_freshness_enabled: feedCb.checked });
+  feedToggle.append(feedCb, document.createTextNode(" Feed freshness gate (CB + KR)"));
+  root.appendChild(feedToggle);
+
+  const feedSl = document.createElement("label");
+  feedSl.className = "slider";
+  const ft = document.createElement("div");
+  ft.className = "slider-top";
+  ft.innerHTML = "<span>Max feed age</span><b id=\"wkFeedAge\">" + (prefs.feed_max_age_secs ?? 2) + "s</b>";
+  const fin = document.createElement("input");
+  fin.type = "range";
+  fin.min = 0.5;
+  fin.max = 10;
+  fin.step = 0.5;
+  fin.value = prefs.feed_max_age_secs ?? 2;
+  fin.oninput = () => {
+    document.getElementById("wkFeedAge").textContent = fin.value + "s";
+    clearTimeout(fin._t);
+    fin._t = setTimeout(() => postJSON("/api/settings", { weekend_feed_max_age_secs: Number(fin.value) }), 220);
+  };
+  feedSl.append(ft, fin);
+  root.appendChild(feedSl);
 }
 
 function buildPaperModes(state) {
@@ -1077,6 +1107,14 @@ function buildPaperModes(state) {
   }
   toggle("Ignore edge gate", "ignore_edge_gate");
   toggle("Fade model", "fade_model");
+  const momRow = document.createElement("label");
+  momRow.className = "toggle";
+  const momCb = document.createElement("input");
+  momCb.type = "checkbox";
+  momCb.checked = m.momentum_gate_enabled !== false;
+  momCb.onchange = () => postJSON("/api/settings", { paper_momentum_gate_enabled: momCb.checked });
+  momRow.append(momCb, document.createTextNode(" Momentum gate"));
+  root.appendChild(momRow);
 
   const trig = document.createElement("label");
   trig.className = "slider";
@@ -1122,7 +1160,8 @@ function buildSliders(spec, params) {
       val.textContent = unit(Number(input.value), sl.unit);
       clearTimeout(input._t);
       input._t = setTimeout(() => {
-        postJSON("/api/settings", { strategy: spec.id, key: sl.key, value: Number(input.value), asset: asset });
+        const stratId = sl.scope === "shared" ? "shared" : spec.id;
+        postJSON("/api/settings", { strategy: stratId, key: sl.key, value: Number(input.value), asset: asset });
       }, 220);
     });
     wrap.append(top, input);
@@ -1167,6 +1206,22 @@ function renderJournal(state) {
         cell.innerHTML = "<div class=\"muted\">Mode " + mode + extra + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
         pa.appendChild(cell);
       }
+      function reportBlock(title, map) {
+        if (!map || !Object.keys(map).length) return;
+        const sub = document.createElement("div");
+        sub.className = "muted";
+        sub.textContent = title;
+        pa.appendChild(sub);
+        for (const [label, row] of Object.entries(map)) {
+          if (!row.count) continue;
+          const cell = document.createElement("div");
+          cell.innerHTML = "<div class=\"muted\">" + label + "</div><div>" + row.count + " · WR " + rate(row.win_rate) + " · " + signedMoney(row.net_pnl) + "</div>";
+          pa.appendChild(cell);
+        }
+      }
+      reportBlock("By strategy", an.by_strategy);
+      reportBlock("By session (ET)", an.by_session);
+      reportBlock("By hour (ET)", an.by_hour);
     }
   }
   const calBody = document.getElementById("calbody");

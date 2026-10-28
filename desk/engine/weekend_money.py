@@ -39,7 +39,32 @@ def load_weekend_prefs(settings: dict) -> dict:
     tz = raw.get("timezone", "America/New_York")
     if tz not in ("America/New_York", "UTC"):
         tz = "America/New_York"
-    return {"timezone": tz}
+    feed_on = raw.get("feed_freshness_enabled", True)
+    if not isinstance(feed_on, bool):
+        feed_on = bool(feed_on)
+    try:
+        max_age = float(raw.get("feed_max_age_secs", 2.0))
+    except (TypeError, ValueError):
+        max_age = 2.0
+    max_age = max(0.5, min(10.0, max_age))
+    return {
+        "timezone": tz,
+        "feed_freshness_enabled": feed_on,
+        "feed_max_age_secs": max_age,
+    }
+
+
+def feed_freshness_check(ctx: GateContext) -> dict:
+    if not ctx.feed_freshness_enabled:
+        return _check("Feed freshness", True, "off")
+    cap = float(ctx.feed_max_age_secs)
+    cb = ctx.coinbase_age
+    kr = ctx.kraken_age
+    if cb is None or kr is None:
+        return _check("Feed freshness", False, "CB/KR missing")
+    ok = cb <= cap and kr <= cap
+    detail = f"CB {cb:.1f}s · KR {kr:.1f}s · max {cap:.1f}s"
+    return _check("Feed freshness", ok, detail)
 
 
 def weekend_bump_for_params(params: dict, *, is_weekend_flag: bool) -> float:
@@ -126,6 +151,7 @@ def _spike_chase_block(ctx: GateContext) -> tuple[bool, str]:
 
 def weekend_checks(ctx: GateContext, *, ignore_edge_gates: bool = False) -> list[dict]:
     checks: list[dict] = []
+    checks.append(feed_freshness_check(ctx))
     spread = None if ctx.ask is None or ctx.bid is None else ctx.ask - ctx.bid
     lag = ctx.lag
 

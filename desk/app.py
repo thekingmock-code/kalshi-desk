@@ -37,6 +37,9 @@ class SettingBody(BaseModel):
     paper_fade_model: bool | None = None
     paper_fade_trigger_cents: float | None = None
     weekend_timezone: str | None = None
+    weekend_feed_freshness_enabled: bool | None = None
+    weekend_feed_max_age_secs: float | None = None
+    paper_momentum_gate_enabled: bool | None = None
 
 
 @app.get("/")
@@ -92,6 +95,9 @@ async def settings(body: SettingBody):
             paper_fade_model=body.paper_fade_model,
             paper_fade_trigger_cents=body.paper_fade_trigger_cents,
             weekend_timezone=body.weekend_timezone,
+            weekend_feed_freshness_enabled=body.weekend_feed_freshness_enabled,
+            weekend_feed_max_age_secs=body.weekend_feed_max_age_secs,
+            paper_momentum_gate_enabled=body.paper_momentum_gate_enabled,
         )
 
 

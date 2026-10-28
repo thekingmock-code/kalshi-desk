@@ -16,12 +16,17 @@ from desk.engine import locked as gate_locked
 from desk.engine.load import load_config
 from desk.engine.tunable import (
     clamp_param,
+    clamp_shared_param,
     default_params,
     merge_params,
+    merge_shared_params,
     pending_key,
     settings_key,
+    shared_settings_key,
+    shared_slider_defs,
     slider_defs,
 )
+from desk.engine.trade_log_meta import entry_log_meta
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
 from desk.engine.balances import paper_summary, parse_kalshi_balance
@@ -318,7 +323,7 @@ class Desk:
                     "kind": spec["kind"],
                     "log_only": bool(spec.get("log_only")),
                     "params": params,
-                    "sliders": slider_defs(sid, "BTC"),
+                    "sliders": slider_defs(sid, "BTC") + shared_slider_defs("BTC"),
                 }
             )
         return {
@@ -417,6 +422,8 @@ class Desk:
         if not (self.cfg.get("paper") or {}).get("enabled"):
             return
         strategy = self._strategy(st.name)
+        if strategy.get("log_only"):
+            return
         ticker = st.book.ticker or ""
         if not ticker:
             return
@@ -455,6 +462,7 @@ class Desk:
         mkt = view.get("market") or {}
         bot = view.get("bot") or {}
         trade = view.get("trade") or {}
+        hour_et, session = entry_log_meta(now, tz=prefs["timezone"])
         entry_log = entry_snapshot(
             side=detail,
             bot=bot,
@@ -467,6 +475,9 @@ class Desk:
             gate_mode=gate_mode,
             is_weekend=is_wk,
             weekend_bump_applied=bump,
+            strategy_id=strategy.get("id"),
+            hour_et=hour_et,
+            session=session,
         )
         paper_buy(
             st=st,
@@ -563,6 +574,7 @@ class Desk:
             momentum_30=metrics.get("momentum_30"),
             momentum_60=metrics.get("momentum_60"),
             signal_hold_secs=signal_hold,
+            feed_ages=metrics.get("feed_ages"),
         )
 
     def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
@@ -928,7 +940,9 @@ class Desk:
 
     def _params_for(self, strategy_id: str, asset: str, saved: dict | None = None) -> dict:
         saved = saved if saved is not None else self.store.settings()
-        return merge_params(strategy_id, asset, saved.get(settings_key(strategy_id, asset)))
+        shared = merge_shared_params(asset, saved.get(shared_settings_key(asset)))
+        strat = merge_params(strategy_id, asset, saved.get(settings_key(strategy_id, asset)))
+        return {**shared, **strat}
 
     def _strategy(self, asset: str = "BTC") -> dict:
         saved = self.store.settings()
@@ -1226,10 +1240,20 @@ class Desk:
         window = float(self.cfg["feeds"]["momentum_window_secs"])
         return self._momentum_secs(st, now, price, window)
 
-    def update_weekend_prefs(self, *, timezone: str | None = None) -> dict:
+    def update_weekend_prefs(
+        self,
+        *,
+        timezone: str | None = None,
+        feed_freshness_enabled: bool | None = None,
+        feed_max_age_secs: float | None = None,
+    ) -> dict:
         prefs = load_weekend_prefs(self.store.settings())
         if timezone is not None:
             prefs["timezone"] = timezone if timezone in ("America/New_York", "UTC") else prefs["timezone"]
+        if feed_freshness_enabled is not None:
+            prefs["feed_freshness_enabled"] = bool(feed_freshness_enabled)
+        if feed_max_age_secs is not None:
+            prefs["feed_max_age_secs"] = max(0.5, min(10.0, float(feed_max_age_secs)))
         self.store.save_setting(WEEKEND_PREFS_KEY, prefs)
         return {"ok": True, "state": self.snapshot()}
 
@@ -1241,6 +1265,7 @@ class Desk:
         ignore_edge_gate: bool | None = None,
         fade_model: bool | None = None,
         fade_trigger_cents: float | None = None,
+        momentum_gate_enabled: bool | None = None,
     ) -> dict:
         modes = load_paper_modes(self.store.settings())
         if edge_basis is not None:
@@ -1253,6 +1278,8 @@ class Desk:
             modes["fade_model"] = bool(fade_model)
         if fade_trigger_cents is not None:
             modes["fade_trigger_cents"] = max(1.0, min(30.0, float(fade_trigger_cents)))
+        if momentum_gate_enabled is not None:
+            modes["momentum_gate_enabled"] = bool(momentum_gate_enabled)
         self.store.save_setting(PAPER_SETTINGS_KEY, modes)
         return {"ok": True, "state": self.snapshot()}
 
@@ -1269,10 +1296,24 @@ class Desk:
         paper_fade_model: bool | None = None,
         paper_fade_trigger_cents: float | None = None,
         weekend_timezone: str | None = None,
+        weekend_feed_freshness_enabled: bool | None = None,
+        weekend_feed_max_age_secs: float | None = None,
+        paper_momentum_gate_enabled: bool | None = None,
     ) -> dict:
         now = time.time()
-        if weekend_timezone is not None:
-            return self.update_weekend_prefs(timezone=weekend_timezone)
+        if any(
+            x is not None
+            for x in (
+                weekend_timezone,
+                weekend_feed_freshness_enabled,
+                weekend_feed_max_age_secs,
+            )
+        ):
+            return self.update_weekend_prefs(
+                timezone=weekend_timezone,
+                feed_freshness_enabled=weekend_feed_freshness_enabled,
+                feed_max_age_secs=weekend_feed_max_age_secs,
+            )
         if any(
             x is not None
             for x in (
@@ -1281,6 +1322,7 @@ class Desk:
                 paper_ignore_edge_gate,
                 paper_fade_model,
                 paper_fade_trigger_cents,
+                paper_momentum_gate_enabled,
             )
         ):
             return self.update_paper_modes(
@@ -1289,7 +1331,21 @@ class Desk:
                 ignore_edge_gate=paper_ignore_edge_gate,
                 fade_model=paper_fade_model,
                 fade_trigger_cents=paper_fade_trigger_cents,
+                momentum_gate_enabled=paper_momentum_gate_enabled,
             )
+        if strategy == "shared" and key is not None and value is not None:
+            if not asset or asset not in self.assets:
+                return {"ok": False, "error": "asset required"}
+            try:
+                num = clamp_shared_param(asset, key, float(value))
+            except KeyError:
+                return {"ok": False, "error": "unknown shared param"}
+            sk = shared_settings_key(asset)
+            saved = self.store.settings()
+            current = dict(saved.get(sk) or merge_shared_params(asset, None))
+            current[key] = num
+            self.store.save_setting(sk, current)
+            return {"ok": True, "state": self.snapshot()}
         if active:
             if active not in self.cfg["strategies"]:
                 return {"ok": False, "error": "unknown strategy"}

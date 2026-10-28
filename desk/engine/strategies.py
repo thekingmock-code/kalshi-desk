@@ -40,6 +40,13 @@ def gate_sides(
     ignore_edge_gates: bool = False,
     skip_divergence: bool = False,
     is_weekend: bool = False,
+    composite: float | None = None,
+    index_price: float | None = None,
+    coinbase_age: float | None = None,
+    kraken_age: float | None = None,
+    feed_freshness_enabled: bool = False,
+    feed_max_age_secs: float = 2.0,
+    momentum_gate_enabled: bool = True,
 ) -> dict[str, list[dict]]:
     del already_entered_hour
     p = params or merge_params(strategy.get("id", "gates_15m"), asset, strategy.get("params"))
@@ -83,6 +90,13 @@ def gate_sides(
             momentum_60=momentum_60,
             signal_hold_secs=signal_hold_secs,
             is_weekend=is_weekend,
+            composite=composite,
+            index_price=index_price,
+            coinbase_age=coinbase_age,
+            kraken_age=kraken_age,
+            feed_freshness_enabled=feed_freshness_enabled,
+            feed_max_age_secs=feed_max_age_secs,
+            momentum_gate_enabled=momentum_gate_enabled,
         )
         return evaluate_side(
             strategy=strategy,

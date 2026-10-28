@@ -6,6 +6,16 @@ from typing import Any
 
 ASSETS = ("BTC", "SOL", "BNB")
 
+SHARED_KEYS = ("basis_max_usd",)
+
+_SHARED_SCHEMA: dict[str, dict[str, tuple[float, float, float]]] = {
+    "basis_max_usd": {
+        "BTC": (3.0, 0.5, 15.0),
+        "SOL": (0.05, 0.01, 2.0),
+        "BNB": (0.05, 0.01, 2.0),
+    },
+}
+
 # default, min, max per asset
 _SCHEMA: dict[str, dict[str, dict[str, tuple[float, float, float]]]] = {
     "net_edge_min": {
@@ -115,7 +125,53 @@ SLIDER_META: dict[str, dict[str, Any]] = {
     "prob_edge_min_cents": {"label": "Prob edge min", "step": 0.5, "unit": "cents_raw"},
     "weekend_bump_cents": {"label": "Weekend G4 bump (c)", "step": 0.5, "unit": "cents_raw"},
     "entry_hold_secs": {"label": "Signal hold", "step": 1, "unit": "seconds"},
+    "basis_max_usd": {"label": "Basis max (|comp−index|)", "step": 0.05, "unit": "usd"},
 }
+
+
+def shared_settings_key(asset: str) -> str:
+    return f"shared:{asset}"
+
+
+def merge_shared_params(asset: str, saved: dict | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for key in SHARED_KEYS:
+        default, lo, hi = _SHARED_SCHEMA[key][asset]
+        out[key] = default
+    if saved:
+        for k, v in saved.items():
+            if k in out:
+                try:
+                    out[k] = clamp_shared_param(asset, k, float(v))
+                except (KeyError, TypeError, ValueError):
+                    pass
+    return out
+
+
+def clamp_shared_param(asset: str, key: str, value: float) -> float:
+    if key not in _SHARED_SCHEMA or asset not in _SHARED_SCHEMA[key]:
+        raise KeyError(key)
+    _default, lo, hi = _SHARED_SCHEMA[key][asset]
+    return min(hi, max(lo, float(value)))
+
+
+def shared_slider_defs(asset: str) -> list[dict]:
+    sliders = []
+    for key in SHARED_KEYS:
+        meta = SLIDER_META[key]
+        _default, lo, hi = _SHARED_SCHEMA[key][asset]
+        sliders.append(
+            {
+                "key": key,
+                "label": meta["label"],
+                "min": lo,
+                "max": hi,
+                "step": meta["step"],
+                "unit": meta["unit"],
+                "scope": "shared",
+            }
+        )
+    return sliders
 
 
 def default_params(asset: str, keys: tuple[str, ...]) -> dict[str, float]:
@@ -216,6 +272,8 @@ def pending_key(strategy_id: str, asset: str) -> str:
 def all_defaults_for_reset() -> dict[str, dict[str, float]]:
     """Flat map strategy:asset -> params for reset."""
     out: dict[str, dict[str, float]] = {}
+    for asset in ASSETS:
+        out[f"shared:{asset}"] = merge_shared_params(asset, None)
     for sid, keys in (
         ("gates_15m", GATES_15M_KEYS),
         ("spot_arb", ARB_KEYS),

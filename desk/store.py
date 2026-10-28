@@ -132,6 +132,9 @@ class Store:
         for ddl in (
             "ALTER TABLE paper_trades ADD COLUMN is_weekend INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE paper_trades ADD COLUMN weekend_bump_applied REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE paper_trades ADD COLUMN strategy TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN hour_et INTEGER",
+            "ALTER TABLE paper_trades ADD COLUMN session TEXT",
         ):
             try:
                 self.conn.execute(ddl)
@@ -323,8 +326,9 @@ class Store:
             """
             INSERT INTO paper_trades (
               ts, asset, ticker, side, gate_mode, edge_net, edge_entry, raw_prob_edge,
-              edge_bucket, p_up, ask, fee, spread, secs_left, is_weekend, weekend_bump_applied
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              edge_bucket, p_up, ask, fee, spread, secs_left, is_weekend, weekend_bump_applied,
+              strategy, hour_et, session
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("ts", time.time()),
@@ -343,6 +347,9 @@ class Store:
                 row.get("secs_left"),
                 1 if row.get("is_weekend") else 0,
                 float(row.get("weekend_bump_applied") or 0),
+                row.get("strategy"),
+                row.get("hour_et"),
+                row.get("session"),
             ),
         )
         self.conn.commit()
@@ -351,11 +358,7 @@ class Store:
         self.conn.execute(
             """
             UPDATE paper_trades SET settled = 1, up_won = ?, net_pnl = ?, right = ?
-            WHERE id = (
-              SELECT id FROM paper_trades
-              WHERE asset = ? AND ticker = ? AND side = ? AND settled = 0
-              ORDER BY ts DESC LIMIT 1
-            )
+            WHERE asset = ? AND ticker = ? AND side = ? AND settled = 0
             """,
             (
                 None if up_won is None else int(bool(up_won)),

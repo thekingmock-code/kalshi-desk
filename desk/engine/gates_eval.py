@@ -44,6 +44,13 @@ class GateContext:
     net_edge_entry: float | None = None
     gate_edge: float | None = None
     is_weekend: bool = False
+    composite: float | None = None
+    index_price: float | None = None
+    coinbase_age: float | None = None
+    kraken_age: float | None = None
+    feed_freshness_enabled: bool = False
+    feed_max_age_secs: float = 2.0
+    momentum_gate_enabled: bool = True
 
 
 def net_edge(prob: float | None, ask: float | None, spread: float | None, fee_fn: Callable[[float], float]) -> float | None:
@@ -64,6 +71,19 @@ def gate_edge_value(basis: str, edge_net: float | None, edge_entry: float | None
     if basis == "entry":
         return edge_entry
     return edge_net
+
+
+def basis_gap_check(ctx: GateContext) -> dict:
+    if not ctx.index_ok or ctx.composite is None or ctx.index_price is None:
+        return _check("Basis gap", True, "n/a (no Kalshi index)")
+    gap = abs(ctx.composite - ctx.index_price)
+    cap = float(ctx.params.get("basis_max_usd", 3.0))
+    ok = gap <= cap
+    return _check(
+        "Basis gap",
+        ok,
+        f"|comp−index|=${gap:.2f} max ${cap:.2f}",
+    )
 
 
 def locked_checks(ctx: GateContext, *, ignore_edge_gates: bool = False, skip_divergence: bool = False) -> list[dict]:
@@ -89,6 +109,7 @@ def locked_checks(ctx: GateContext, *, ignore_edge_gates: bool = False, skip_div
             locked=True,
         )
     )
+    checks.append(basis_gap_check(ctx))
     mid = ctx.yes_mid if ctx.side == "UP" else ctx.no_mid
     div_ok = True
     div_d = "n/a"
@@ -146,10 +167,17 @@ def strategy_checks(kind: str, ctx: GateContext, *, ignore_edge_gates: bool = Fa
         checks.append(_check("Net edge", edge_ok, "bypassed" if ignore_edge_gates else edge_s))
         t_ok, t_d = _trend_sigma_ok(ctx)
         checks.append(_check("Trend σ", t_ok, t_d))
-        agrees = ctx.momentum is not None and ctx.momentum > 0
-        checks.append(
-            _check("Momentum agrees", agrees, "flat" if not ctx.momentum else ("with" if agrees else "against"))
-        )
+        if ctx.momentum_gate_enabled:
+            agrees = ctx.momentum is not None and ctx.momentum > 0
+            checks.append(
+                _check(
+                    "Momentum agrees",
+                    agrees,
+                    "flat" if not ctx.momentum else ("with" if agrees else "against"),
+                )
+            )
+        else:
+            checks.append(_check("Momentum agrees", True, "off"))
         flow_need = float(ctx.params.get("flow_min", 0.58)) * 100
         flow_ok = ctx.flow_pct is not None and ctx.flow_pct >= flow_need
         checks.append(
@@ -276,7 +304,9 @@ def evaluate_side(
     if kind == "weekend_money":
         from desk.engine.weekend_money import weekend_checks
 
-        return weekend_checks(ctx_base, ignore_edge_gates=ignore_edge_gates)
+        return [basis_gap_check(ctx_base)] + weekend_checks(
+            ctx_base, ignore_edge_gates=ignore_edge_gates
+        )
     locked = locked_checks(ctx_base, ignore_edge_gates=ignore_edge_gates, skip_divergence=skip_divergence)
     strat = strategy_checks(kind, ctx_base, ignore_edge_gates=ignore_edge_gates)
     return locked + strat
