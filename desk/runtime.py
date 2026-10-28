@@ -429,9 +429,6 @@ class Desk:
         cooldown = float(paper_cfg.get("entry_cooldown_secs", 30))
         cooldown_ok = now - st.last_paper_entry >= cooldown
 
-        if pos and pos.paper and pos.ticker == ticker:
-            return
-
         has_live = pos is not None and not pos.paper
         ok, detail = can_paper_enter(
             view,
