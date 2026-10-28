@@ -27,6 +27,13 @@ from desk.engine.tunable import (
     slider_defs,
 )
 from desk.engine.trade_log_meta import entry_log_meta
+from desk.engine.measurements.prefs import MEASUREMENT_PREFS_KEY, load_measurement_prefs
+from desk.engine.measurements.assemble import build_measurements
+from desk.engine.measurements.analytics import measurement_analytics
+from desk.engine.measurements.window_features import WindowFeatureState
+from desk.engine.measurements.book_tracker import BookMetricsState
+from desk.engine.measurements.liquidation import LiquidationState
+from desk.engine.model import fair_up
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
 from desk.engine.balances import paper_summary, parse_kalshi_balance
@@ -88,6 +95,12 @@ class AssetRT:
     sol_confirm_since: float | None = None
     weekend_hold_side: str | None = None
     weekend_hold_since: float | None = None
+    ref_samples: deque = field(default_factory=deque)
+    last_meas: dict = field(default_factory=dict)
+    last_composite: float | None = None
+    meas_window: WindowFeatureState = field(default_factory=WindowFeatureState)
+    meas_book: BookMetricsState = field(default_factory=BookMetricsState)
+    meas_liq: LiquidationState = field(default_factory=LiquidationState)
 
     def __post_init__(self) -> None:
         self.book.asset = self.name
@@ -140,6 +153,9 @@ class Desk:
         ]
         if self._creds:
             self._tasks.append(asyncio.create_task(self._poll_private(), name="kalshi-private"))
+        prefs = load_measurement_prefs(self.store.settings())
+        for st in self.assets.values():
+            st.meas_liq.enabled = bool(prefs.get("liquidation"))
 
     async def stop(self) -> None:
         self._stop.set()
@@ -174,7 +190,14 @@ class Desk:
                         except Exception as exc:
                             book = {}
                             print(f"Kalshi book {st.name}: {exc.__class__.__name__}")
-                        for key in ("yes_bid", "yes_ask", "no_bid", "no_ask"):
+                        for key in (
+                            "yes_bid",
+                            "yes_ask",
+                            "no_bid",
+                            "no_ask",
+                            "depth_yes_top3",
+                            "depth_no_top3",
+                        ):
                             if book.get(key) is not None:
                                 market[key] = book[key]
                         if book.get("book"):
@@ -346,6 +369,12 @@ class Desk:
             "paper_modes": paper_modes,
             "weekend_prefs": load_weekend_prefs(saved) if paper_on else {"timezone": "America/New_York"},
             "paper_analytics": paper_trade_analytics(self.store.paper_trades()) if paper_on else None,
+            "measurement_prefs": load_measurement_prefs(saved) if paper_on else load_measurement_prefs({}),
+            "measurement_analytics": measurement_analytics(self.store.paper_trades())
+            if paper_on
+            else None,
+            "measurement_ticks": stamp_rows(self.store.measurement_ticks(60)) if paper_on else [],
+            "paper_trade_log": stamp_rows(self.store.paper_trades(40)) if paper_on else [],
             "balances": self._balances_header(assets, rows),
         }
 
@@ -395,6 +424,68 @@ class Desk:
             self._run_paper(st, now)
             self._maybe_scan(st, now)
             self._maybe_shadow(st, now)
+            self._measurement_tick(st, now, px)
+
+    def _measurement_tick(self, st: AssetRT, now: float, composite: float | None) -> None:
+        if not (self.cfg.get("paper") or {}).get("enabled"):
+            return
+        prefs = load_measurement_prefs(self.store.settings())
+        if not any(
+            prefs.get(k)
+            for k in ("settlement_window", "book_metrics", "window_features", "liquidation")
+        ):
+            return
+        ref = self._ref(st, now) or composite
+        if ref is not None:
+            st.ref_samples.append((now, ref))
+            while st.ref_samples and now - st.ref_samples[0][0] > 120:
+                st.ref_samples.popleft()
+        if composite is not None and st.last_composite is not None:
+            shared = merge_shared_params(st.name, self.store.settings().get(shared_settings_key(st.name)))
+            move_thr = float(shared.get("quote_lag_move_usd", 5.0))
+            st.meas_book.on_composite_move(now, composite - st.last_composite, move_thr)
+        if composite is not None:
+            st.last_composite = composite
+        market = st.market or {}
+        close_ts = market.get("close_ts")
+        strike = st.book.strike
+        window = float(self.cfg["feeds"]["vol_window_secs"])
+        samples = list(st.samples)
+        move = move_1m_from_returns(log_return_stdev(samples, now, window), ref or composite)
+        p_up = None
+        if ref is not None and strike is not None and close_ts is not None:
+            secs_left = close_ts - now
+            p_up, _, _ = fair_up(ref, strike, move or 0.0, secs_left, self.cfg["model"])
+        cb = st.coinbase[0] if st.coinbase else None
+        kr = st.kraken[0] if st.kraken else None
+        book = {
+            "yes_bid": st.book.yes_bid,
+            "yes_ask": st.book.yes_ask,
+            "no_bid": st.book.no_bid,
+            "no_ask": st.book.no_ask,
+            "depth_yes_top3": market.get("depth_yes_top3"),
+            "depth_no_top3": market.get("depth_no_top3"),
+        }
+        meas = build_measurements(
+            prefs=prefs,
+            samples=list(st.ref_samples),
+            close_ts=close_ts,
+            now=now,
+            ref=ref,
+            strike=strike,
+            move_1m=move,
+            p_up=p_up,
+            book=book,
+            book_state=st.meas_book,
+            window_state=st.meas_window,
+            liq_state=st.meas_liq,
+            composite=composite,
+            coinbase=cb,
+            kraken=kr,
+        )
+        st.last_meas = meas
+        ticker = st.book.ticker or market.get("ticker")
+        self.store.add_measurement_tick(ts=now, asset=st.name, ticker=ticker, payload=meas)
 
     def _load_paper_positions(self) -> None:
         for row in self.store.load_paper_open():
@@ -463,6 +554,7 @@ class Desk:
         bot = view.get("bot") or {}
         trade = view.get("trade") or {}
         hour_et, session = entry_log_meta(now, tz=prefs["timezone"])
+        meas_snap = dict(st.last_meas) if st.last_meas else {}
         entry_log = entry_snapshot(
             side=detail,
             bot=bot,
@@ -479,6 +571,7 @@ class Desk:
             hour_et=hour_et,
             session=session,
         )
+        entry_log["meas_json"] = meas_snap
         paper_buy(
             st=st,
             view=view,
@@ -575,6 +668,7 @@ class Desk:
             momentum_60=metrics.get("momentum_60"),
             signal_hold_secs=signal_hold,
             feed_ages=metrics.get("feed_ages"),
+            measurements=st.last_meas,
         )
 
     def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
@@ -592,6 +686,8 @@ class Desk:
         if not market:
             self._expire(st, now)
             return
+        if st.meas_window.ticker != market.get("ticker"):
+            st.meas_window.reset(market.get("ticker"))
         if st.book.ticker and market["ticker"] != st.book.ticker:
             new_book, row = rollover(st.book, market["ticker"], self._ref(st, now))
             if row:
@@ -620,12 +716,26 @@ class Desk:
             st.sol_confirm_since = None
             st.sol_confirm_side = None
             st.book.asset = st.name
-        st.book.ticker = market["ticker"]
+        ticker = market["ticker"]
+        if ticker and st.meas_window.ticker != ticker:
+            st.meas_window.reset(ticker)
+        st.book.ticker = ticker
         st.book.asset = st.name
         st.book.strike = market.get("strike")
         for key in ("yes_bid", "yes_ask", "no_bid", "no_ask"):
             if market.get(key) is not None:
                 setattr(st.book, key, market[key])
+        st.meas_book.on_book(
+            now,
+            {
+                "yes_bid": market.get("yes_bid"),
+                "yes_ask": market.get("yes_ask"),
+                "no_bid": market.get("no_bid"),
+                "no_ask": market.get("no_ask"),
+                "depth_yes_top3": market.get("depth_yes_top3"),
+                "depth_no_top3": market.get("depth_no_top3"),
+            },
+        )
         st.market = market
         if market and market.get("ticker") and market["ticker"] != st.chart_ticker:
             st.chart_ticker = market["ticker"]
@@ -1240,6 +1350,16 @@ class Desk:
         window = float(self.cfg["feeds"]["momentum_window_secs"])
         return self._momentum_secs(st, now, price, window)
 
+    def update_measurement_prefs(self, **kwargs) -> dict:
+        prefs = load_measurement_prefs(self.store.settings())
+        for key in prefs:
+            if key in kwargs and kwargs[key] is not None:
+                prefs[key] = bool(kwargs[key])
+        self.store.save_setting(MEASUREMENT_PREFS_KEY, prefs)
+        for st in self.assets.values():
+            st.meas_liq.enabled = bool(prefs.get("liquidation"))
+        return {"ok": True, "state": self.snapshot()}
+
     def update_weekend_prefs(
         self,
         *,
@@ -1299,8 +1419,30 @@ class Desk:
         weekend_feed_freshness_enabled: bool | None = None,
         weekend_feed_max_age_secs: float | None = None,
         paper_momentum_gate_enabled: bool | None = None,
+        meas_settlement_window: bool | None = None,
+        meas_book_metrics: bool | None = None,
+        meas_window_features: bool | None = None,
+        meas_liquidation: bool | None = None,
+        meas_price_buckets: bool | None = None,
     ) -> dict:
         now = time.time()
+        if any(
+            x is not None
+            for x in (
+                meas_settlement_window,
+                meas_book_metrics,
+                meas_window_features,
+                meas_liquidation,
+                meas_price_buckets,
+            )
+        ):
+            return self.update_measurement_prefs(
+                settlement_window=meas_settlement_window,
+                book_metrics=meas_book_metrics,
+                window_features=meas_window_features,
+                liquidation=meas_liquidation,
+                price_buckets=meas_price_buckets,
+            )
         if any(
             x is not None
             for x in (

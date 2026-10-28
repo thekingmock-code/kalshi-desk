@@ -120,11 +120,31 @@ def _levels(raw) -> list[float]:
     return prices
 
 
+def _depth_top3(levels_raw) -> tuple[float, list[float]]:
+    """Sum contract sizes at the three best price levels."""
+    if not levels_raw:
+        return 0.0, []
+    parsed: list[tuple[float, float]] = []
+    for row in levels_raw:
+        if not row or len(row) < 2:
+            continue
+        px = _f(row[0])
+        qty = _f(row[1])
+        if px is None or qty is None or qty <= 0:
+            continue
+        parsed.append((px, qty))
+    if not parsed:
+        return 0.0, []
+    parsed.sort(key=lambda x: x[0], reverse=True)
+    top = parsed[:3]
+    return sum(q for _, q in top), [p for p, _ in top]
+
+
 def parse_book(body: dict) -> dict:
     """Best bid is the highest price. Ask is one minus the other side's bid."""
     fp = body.get("orderbook_fp") or body.get("orderbook") or {}
-    yes_prices = _levels(fp.get("yes_dollars") or fp.get("yes"))
-    no_prices = _levels(fp.get("no_dollars") or fp.get("no"))
+    yes_depth, yes_prices = _depth_top3(fp.get("yes_dollars") or fp.get("yes"))
+    no_depth, no_prices = _depth_top3(fp.get("no_dollars") or fp.get("no"))
     yes_bid = max(yes_prices) if yes_prices else None
     no_bid = max(no_prices) if no_prices else None
     return {
@@ -133,6 +153,8 @@ def parse_book(body: dict) -> dict:
         "yes_ask": None if no_bid is None else round(1 - no_bid, 4),
         "no_ask": None if yes_bid is None else round(1 - yes_bid, 4),
         "book": bool(yes_prices or no_prices),
+        "depth_yes_top3": yes_depth or None,
+        "depth_no_top3": no_depth or None,
     }
 
 

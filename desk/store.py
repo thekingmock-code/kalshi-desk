@@ -135,6 +135,14 @@ class Store:
             "ALTER TABLE paper_trades ADD COLUMN strategy TEXT",
             "ALTER TABLE paper_trades ADD COLUMN hour_et INTEGER",
             "ALTER TABLE paper_trades ADD COLUMN session TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN meas_json TEXT",
+            """CREATE TABLE IF NOT EXISTS measurement_ticks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT,
+                payload TEXT NOT NULL
+            )""",
         ):
             try:
                 self.conn.execute(ddl)
@@ -193,6 +201,7 @@ class Store:
         self.conn.execute("DELETE FROM paper_buys")
         self.conn.execute("DELETE FROM paper_orders")
         self.conn.execute("DELETE FROM paper_trades")
+        self.conn.execute("DELETE FROM measurement_ticks")
         self.conn.execute("DELETE FROM paper_open")
         self.conn.execute("DELETE FROM shadow_paper")
         self.conn.commit()
@@ -327,8 +336,8 @@ class Store:
             INSERT INTO paper_trades (
               ts, asset, ticker, side, gate_mode, edge_net, edge_entry, raw_prob_edge,
               edge_bucket, p_up, ask, fee, spread, secs_left, is_weekend, weekend_bump_applied,
-              strategy, hour_et, session
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              strategy, hour_et, session, meas_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("ts", time.time()),
@@ -350,9 +359,32 @@ class Store:
                 row.get("strategy"),
                 row.get("hour_et"),
                 row.get("session"),
+                json.dumps(row.get("meas_json")) if row.get("meas_json") is not None else None,
             ),
         )
         self.conn.commit()
+
+    def add_measurement_tick(self, *, ts: float, asset: str, ticker: str | None, payload: dict) -> None:
+        self.conn.execute(
+            "INSERT INTO measurement_ticks (ts, asset, ticker, payload) VALUES (?, ?, ?, ?)",
+            (ts, asset, ticker, json.dumps(payload)),
+        )
+        self.conn.commit()
+
+    def measurement_ticks(self, limit: int = 100) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM measurement_ticks ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            try:
+                item["payload"] = json.loads(item["payload"])
+            except (TypeError, json.JSONDecodeError):
+                pass
+            out.append(item)
+        return out
 
     def settle_paper_trade(self, asset: str, ticker: str, side: str, *, up_won: bool | None, net_pnl: float | None, right: bool | None) -> None:
         self.conn.execute(

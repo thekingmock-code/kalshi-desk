@@ -268,6 +268,10 @@
     <p id="note" class="note" hidden></p>
   </div>
   <nav id="tabs" class="tabs"></nav>
+  <nav id="pageTabs" class="tabs" style="margin-top:4px">
+    <button type="button" class="tab on" data-page="desk">Desk</button>
+    <button type="button" class="tab" data-page="features">Features</button>
+  </nav>
   <main id="main">
     <section id="trade"><h2>CURRENT TRADE</h2><p class="muted">Connecting…</p></section>
     <section id="gauge"><h2>DISTANCE TO STRIKE</h2><p class="muted">no data</p></section>
@@ -305,6 +309,28 @@
       </div>
       <div id="scans"></div>
       <div class="actions"><button id="clear" class="danger" type="button">Clear journal</button></div>
+      <h3 style="margin-top:14px">Tick log (measurements)</h3>
+      <div id="measToggles" class="paper-modes"></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr id="tickHead"></tr></thead>
+          <tbody id="tickBody"></tbody>
+        </table>
+      </div>
+      <h3 style="margin-top:14px">Paper trade log</h3>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>Time</th><th>Asset</th><th>Strategy</th><th>Ask</th><th>P(up)</th><th>P(up) avg</th><th>Imb</th><th>Crosses</th><th>P&L</th>
+          </tr></thead>
+          <tbody id="ptradeBody"></tbody>
+        </table>
+      </div>
+    </section>
+    <section id="features" hidden>
+      <h2>FEATURES · reports</h2>
+      <p class="muted">Log-only measurements. No gate or entry changes.</p>
+      <div id="featureReports"></div>
     </section>
     <p class="foot" id="foot">Observe only — no Kalshi orders. Shadow paper scores log when gates pass; settlement uses composite vs strike (approx). Composite lead, BNB, and chop weights are unverified.</p>
   </main>
@@ -450,6 +476,14 @@ function render(state) {
   renderChop(view);
   renderStrategy(state, view);
   renderJournal(state);
+  renderMeasurementUI(state);
+  renderFeatures(state);
+  const page = window.__deskPage || "desk";
+  document.getElementById("main").hidden = page !== "desk";
+  document.getElementById("features").hidden = page !== "features";
+  document.getElementById("pageTabs").querySelectorAll(".tab").forEach((b) => {
+    b.classList.toggle("on", b.dataset.page === page);
+  });
   const foot = document.getElementById("foot");
   if (foot) {
     if (state.observe_only) {
@@ -801,7 +835,9 @@ function renderTrade(view, state) {
   const staleNote = stale.map((name) => name + " " + Number(ages[name]).toFixed(0) + "s old").join(", ");
   mktBlock.appendChild(line("Composite", spot(bot.composite) + " · " + fresh + (staleNote ? " · " + staleNote : "")));
   mktBlock.appendChild(line("Lag", lagText(bot.lag)));
-  mktBlock.appendChild(line("P(up)", bot.p_up == null ? "—" : Math.round(bot.p_up * 100) + "%"));
+  const pupLine = bot.p_up == null ? "—" : Math.round(bot.p_up * 100) + "%";
+  const pupAvg = bot.p_up_avgmodel == null ? "—" : Math.round(bot.p_up_avgmodel * 100) + "%";
+  mktBlock.appendChild(line("P(up)", pupLine + " · avg " + pupAvg));
   box.appendChild(mktBlock);
 
   const cmp = document.createElement("div");
@@ -1331,6 +1367,143 @@ function renderJournal(state) {
 async function postJSON(url, body) {
   await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
+
+function measFlat(payload) {
+  const s = payload?.settlement || {};
+  const b = payload?.book || {};
+  const w = payload?.window || {};
+  const l = payload?.liquidation || {};
+  return {
+    wavg: s.window_avg_so_far,
+    locked: s.locked_frac,
+    pupAvg: s.p_up_avgmodel,
+    imb: b.book_imbalance,
+    qlag: b.quote_lag_ms,
+    crosses: w.strike_crosses,
+    liq: l.liq_burst,
+  };
+}
+
+function buildMeasToggles(state) {
+  const root = document.getElementById("measToggles");
+  if (!root || state.observe_only) return;
+  root.replaceChildren();
+  const p = state.measurement_prefs || {};
+  const defs = [
+    ["meas_settlement_window", "Settlement window", "settlement_window"],
+    ["meas_book_metrics", "Book metrics", "book_metrics"],
+    ["meas_window_features", "Window features", "window_features"],
+    ["meas_liquidation", "Liquidation feed", "liquidation"],
+    ["meas_price_buckets", "Price-bucket reports", "price_buckets"],
+  ];
+  for (const [apiKey, label, prefKey] of defs) {
+    const row = document.createElement("label");
+    row.className = "toggle";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = prefKey === "liquidation" ? !!p.liquidation : p[prefKey] !== false;
+    cb.onchange = () => {
+      const body = {};
+      body[apiKey] = cb.checked;
+      postJSON("/api/settings", body);
+    };
+    row.append(cb, document.createTextNode(" " + label));
+    root.appendChild(row);
+  }
+}
+
+function renderMeasurementUI(state) {
+  buildMeasToggles(state);
+  const head = document.getElementById("tickHead");
+  const body = document.getElementById("tickBody");
+  if (!head || !body) return;
+  const cols = ["Time", "Asset", "P(up) avg", "Imb", "Q lag ms", "Crosses"];
+  head.replaceChildren();
+  cols.forEach((c) => {
+    const th = document.createElement("th");
+    th.textContent = c;
+    head.appendChild(th);
+  });
+  body.replaceChildren();
+  for (const row of (state.measurement_ticks || []).slice(0, 25)) {
+    const f = measFlat(row.payload);
+    const tr = document.createElement("tr");
+    [row.et || "—", row.asset || "—", f.pupAvg == null ? "—" : Math.round(f.pupAvg * 100) + "%",
+      f.imb == null ? "—" : f.imb.toFixed(2), f.qlag == null ? "—" : Math.round(f.qlag),
+      f.crosses ?? "—"].forEach((text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  }
+  const pt = document.getElementById("ptradeBody");
+  if (!pt) return;
+  pt.replaceChildren();
+  for (const row of state.paper_trade_log || []) {
+    let meas = {};
+    try { meas = typeof row.meas_json === "string" ? JSON.parse(row.meas_json) : (row.meas_json || {}); } catch (e) { /* ignore */ }
+    const f = measFlat(meas);
+    const tr = document.createElement("tr");
+    const pnl = row.net_pnl == null ? "—" : signedMoney(row.net_pnl);
+    [row.et || "—", row.asset, row.strategy || "—", cents(row.ask),
+      row.p_up == null ? "—" : Math.round(row.p_up * 100) + "%",
+      f.pupAvg == null ? "—" : Math.round(f.pupAvg * 100) + "%",
+      f.imb == null ? "—" : f.imb.toFixed(2), f.crosses ?? "—", pnl].forEach((text) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    pt.appendChild(tr);
+  }
+}
+
+function renderFeatures(state) {
+  const box = document.getElementById("featureReports");
+  if (!box) return;
+  box.replaceChildren();
+  const an = state.measurement_analytics;
+  if (!an) {
+    box.textContent = "Paper off — no feature reports.";
+    return;
+  }
+  const pb = an.price_buckets?.rows || [];
+  if (pb.length) {
+    const h = document.createElement("h3");
+    h.textContent = "Price buckets (ask vs win rate)";
+    box.appendChild(h);
+    for (const r of pb) {
+      const p = document.createElement("div");
+      p.className = "muted";
+      p.textContent = r.bucket + " · " + r.strategy + " · " + r.period + " · n=" + r.count + " · WR " + rate(r.win_rate) + " · implied " + (r.implied_ask == null ? "—" : cents(r.implied_ask)) + " · " + signedMoney(r.net_pnl);
+      box.appendChild(p);
+    }
+  }
+  const ft = an.feature_terciles || {};
+  for (const [feat, byStrat] of Object.entries(ft)) {
+    const h = document.createElement("h3");
+    h.textContent = feat + " (terciles)";
+    box.appendChild(h);
+    for (const [strat, buckets] of Object.entries(byStrat)) {
+      const sub = document.createElement("div");
+      sub.className = "muted";
+      sub.textContent = strat;
+      box.appendChild(sub);
+      for (const b of buckets) {
+        const line = document.createElement("div");
+        line.textContent = b.tercile + " · n=" + b.count + " · WR " + rate(b.win_rate) + " · " + signedMoney(b.net_pnl);
+        box.appendChild(line);
+      }
+    }
+  }
+}
+
+document.getElementById("pageTabs")?.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-page]");
+  if (!btn) return;
+  window.__deskPage = btn.dataset.page;
+  if (last) render(last);
+});
 
 document.getElementById("reset").onclick = () => {
   sliderSig = "";

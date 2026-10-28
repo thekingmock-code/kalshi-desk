@@ -73,6 +73,7 @@ def build_asset(
     signal_hold_secs: float | None = None,
     settings: dict | None = None,
     feed_ages: dict | None = None,
+    measurements: dict | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -274,6 +275,7 @@ def build_asset(
             "buy_pct": buy_pct,
             "momentum": momentum,
             "p_up": p_up,
+            "p_up_avgmodel": (measurements or {}).get("settlement", {}).get("p_up_avgmodel"),
             "eff_s": eff_s,
             "edge_up": edge_up,
             "edge_down": edge_down,
@@ -290,6 +292,7 @@ def build_asset(
         "gate_summary": gate_summary,
         "tunable_params": params,
         "tunable_sliders": slider_defs(strat.get("id", "gates_15m"), asset) + shared_slider_defs(asset),
+        "measurements": measurements or {},
         "gauge": build_gauge(
             composite=composite,
             strike=strike,

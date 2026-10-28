@@ -358,5 +358,9 @@ def paper_buy(
             secs_left=entry_log.get("secs_left"),
             is_weekend=entry_log.get("is_weekend"),
             weekend_bump_applied=entry_log.get("weekend_bump_applied"),
+            strategy=entry_log.get("strategy"),
+            hour_et=entry_log.get("hour_et"),
+            session=entry_log.get("session"),
+            meas_json=entry_log.get("meas_json"),
         )
     return pos

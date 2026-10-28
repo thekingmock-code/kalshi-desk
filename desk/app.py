@@ -40,6 +40,11 @@ class SettingBody(BaseModel):
     weekend_feed_freshness_enabled: bool | None = None
     weekend_feed_max_age_secs: float | None = None
     paper_momentum_gate_enabled: bool | None = None
+    meas_settlement_window: bool | None = None
+    meas_book_metrics: bool | None = None
+    meas_window_features: bool | None = None
+    meas_liquidation: bool | None = None
+    meas_price_buckets: bool | None = None
 
 
 @app.get("/")
@@ -98,6 +103,11 @@ async def settings(body: SettingBody):
             weekend_feed_freshness_enabled=body.weekend_feed_freshness_enabled,
             weekend_feed_max_age_secs=body.weekend_feed_max_age_secs,
             paper_momentum_gate_enabled=body.paper_momentum_gate_enabled,
+            meas_settlement_window=body.meas_settlement_window,
+            meas_book_metrics=body.meas_book_metrics,
+            meas_window_features=body.meas_window_features,
+            meas_liquidation=body.meas_liquidation,
+            meas_price_buckets=body.meas_price_buckets,
         )
 
 
