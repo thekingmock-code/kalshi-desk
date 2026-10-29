@@ -55,6 +55,41 @@ def chop_score(
     return total, parts
 
 
+def chop_score_and_meta(
+    *,
+    lead: float | None,
+    sigma_t: float | None,
+    lag: float | None,
+    leader: int | None,
+    buy_pct: float | None,
+    momentum: int | None,
+    crossings: int,
+    cfg: dict,
+) -> tuple[float, list[dict], bool, int]:
+    """Same score as chop_score; adds chop_partial and missing sub-score count."""
+    missing = 0
+    if lead is None or not sigma_t or sigma_t <= 0:
+        missing += 1
+    if lag is None or leader is None:
+        missing += 1
+    if buy_pct is None or leader is None:
+        missing += 1
+    if momentum is None or momentum == 0:
+        missing += 1
+    score, parts = chop_score(
+        lead=lead,
+        sigma_t=sigma_t,
+        lag=lag,
+        leader=leader,
+        buy_pct=buy_pct,
+        momentum=momentum,
+        crossings=crossings,
+        cfg=cfg,
+    )
+    chop_partial = missing > 0
+    return score, parts, chop_partial, missing
+
+
 def chop_label(score: float, cfg: dict) -> str:
     if score >= float(cfg["real_min"]):
         return "REAL MOVE"
