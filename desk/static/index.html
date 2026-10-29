@@ -473,7 +473,7 @@ function render(state) {
   renderGauge(view);
   renderMiniChart(view);
   renderSuggestion(view);
-  renderChop(view);
+  renderChop(view, state);
   renderStrategy(state, view);
   renderJournal(state);
   renderMeasurementUI(state);
@@ -865,7 +865,7 @@ function renderSuggestion(view) {
   box.append(h, word, list);
 }
 
-function renderChop(view) {
+function renderChop(view, state) {
   const box = document.getElementById("chop");
   const chop = view.chop || { score: 0, label: "COIN FLIP", parts: [] };
   box.replaceChildren();
@@ -879,7 +879,14 @@ function renderChop(view) {
   const kind = chop.label === "REAL MOVE" ? "profit" : chop.label === "COIN FLIP" ? "loss" : "wait";
   label.className = kind;
   label.textContent = chop.label;
-  head.append(score, label);
+  if (chop.chop_partial) {
+    const partial = document.createElement("span");
+    partial.className = "muted";
+    partial.textContent = " · partial (" + (chop.missing_rows ?? 0) + " missing)";
+    head.append(score, label, partial);
+  } else {
+    head.append(score, label);
+  }
   const meter = document.createElement("div");
   meter.className = "meter " + (chop.label === "REAL MOVE" ? "real" : chop.label === "COIN FLIP" ? "flip" : "");
   const fill = document.createElement("span");
@@ -897,6 +904,123 @@ function renderChop(view) {
     row.append(name, pts);
     box.appendChild(row);
   }
+
+  if (!state || state.observe_only) return;
+  const cg = state.chop_gates || {};
+  const gatesRoot = document.createElement("div");
+  gatesRoot.className = "paper-modes";
+  const gh = document.createElement("h3");
+  gh.textContent = "CHOP GATES (PAPER)";
+  gatesRoot.appendChild(gh);
+
+  function chopToggle(labelText, key, checked) {
+    const lab = document.createElement("label");
+    lab.className = "toggle";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!checked;
+    cb.onchange = () => postJSON("/api/settings", { [key]: cb.checked });
+    lab.append(cb, document.createTextNode(" " + labelText));
+    return lab;
+  }
+  gatesRoot.appendChild(chopToggle("Layer 0 · data integrity", "chop_layer0_enabled", cg.layer0_enabled !== false));
+
+  function chopSlider(label, key, val, min, max, step, fmt) {
+    const lab = document.createElement("label");
+    lab.className = "slider";
+    const top = document.createElement("div");
+    top.className = "slider-top";
+    const bid = "cg_" + key;
+    top.innerHTML = "<span>" + label + "</span><b id=\"" + bid + "\">" + fmt(val) + "</b>";
+    const inp = document.createElement("input");
+    inp.type = "range";
+    inp.min = min;
+    inp.max = max;
+    inp.step = step;
+    inp.value = val;
+    inp.oninput = () => {
+      document.getElementById(bid).textContent = fmt(Number(inp.value));
+      clearTimeout(inp._t);
+      inp._t = setTimeout(() => postJSON("/api/settings", { [key]: Number(inp.value) }), 220);
+    };
+    lab.append(top, inp);
+    return lab;
+  }
+  gatesRoot.appendChild(chopSlider("Feed max age (s)", "chop_feed_max_age_s", cg.feed_max_age_s ?? 2, 0.5, 10, 0.5, (v) => v + "s"));
+  gatesRoot.appendChild(chopSlider("Kalshi quote max age (s)", "chop_quote_max_age_s", cg.quote_max_age_s ?? 5, 0.5, 30, 0.5, (v) => v + "s"));
+  gatesRoot.appendChild(chopSlider("Max missing chop rows (partial)", "chop_max_missing_rows", cg.max_missing_rows ?? 2, 0, 3, 1, (v) => String(v)));
+
+  gatesRoot.appendChild(chopToggle("Chop soft gate", "chop_soft_enabled", cg.soft_enabled));
+  gatesRoot.appendChild(chopSlider("Tier low max (score)", "chop_tier_low_max", cg.tier_low_max ?? 30, 0, 100, 1, (v) => v));
+  gatesRoot.appendChild(chopSlider("Tier mid max (score)", "chop_tier_mid_max", cg.tier_mid_max ?? 50, 0, 100, 1, (v) => v));
+  gatesRoot.appendChild(chopSlider("Addon below low (¢)", "chop_addon_below_low_cents", cg.addon_below_low_cents ?? 2, 0, 10, 0.5, (v) => v + "c"));
+  gatesRoot.appendChild(chopSlider("Addon mid tier (¢)", "chop_addon_mid_cents", cg.addon_mid_cents ?? 1, 0, 10, 0.5, (v) => v + "c"));
+
+  gatesRoot.appendChild(chopToggle("Chop hard gate", "chop_hard_enabled", cg.hard_enabled));
+  if (cg.hard_enabled) {
+    const warn = document.createElement("p");
+    warn.className = "muted";
+    warn.textContent = "Needs backtest support first.";
+    gatesRoot.appendChild(warn);
+  }
+  gatesRoot.appendChild(chopSlider("Hard min chop score", "chop_hard_min", cg.chop_hard_min ?? 0, 0, 60, 1, (v) => v));
+  box.appendChild(gatesRoot);
+
+  const an = state.chop_gate_analytics;
+  if (!an) return;
+  const rep = document.createElement("div");
+  rep.className = "stats";
+  const rh = document.createElement("h3");
+  rh.textContent = "GATE REPORT";
+  rep.appendChild(rh);
+  function statCell(title, row) {
+    const cell = document.createElement("div");
+    const a = document.createElement("div");
+    a.className = "muted";
+    a.textContent = title;
+    const b = document.createElement("div");
+    const n = row?.n_settled ?? row?.count ?? 0;
+    b.textContent = (row?.count ?? 0) + " · WR " + rate(row?.win_rate) + " · " + signedMoney(row?.net_pnl ?? 0) + " (n=" + n + ")";
+    cell.append(a, b);
+    return cell;
+  }
+  rep.appendChild(statCell("Taken trades", an.taken_trades));
+  rep.appendChild(statCell("Shadow (blocked)", an.shadow_trades));
+  const pnlLine = document.createElement("p");
+  pnlLine.textContent =
+    "P&L with gate on: " + signedMoney(an.pnl_with_gate) +
+    " · without (incl. shadow): " + signedMoney(an.pnl_without_gate) +
+    " · Gate " + (an.gate_improved_total_pnl ? "improved" : "did not improve") + " total P&L";
+  rep.appendChild(pnlLine);
+
+  function tierTable(title, map) {
+    if (!map || !Object.keys(map).length) return;
+    const sub = document.createElement("div");
+    sub.className = "muted";
+    sub.textContent = title;
+    rep.appendChild(sub);
+    for (const [group, tiers] of Object.entries(map)) {
+      for (const [tier, cell] of Object.entries(tiers)) {
+        const row = document.createElement("div");
+        row.className = cell.low_n ? "muted" : "";
+        row.textContent =
+          group + " · chop " + tier + " · taken n=" + (cell.taken?.n_settled ?? 0) +
+          " shadow n=" + (cell.shadow?.n_settled ?? 0) +
+          " · WR T " + rate(cell.taken?.win_rate) + " S " + rate(cell.shadow?.win_rate);
+        rep.appendChild(row);
+      }
+    }
+  }
+  tierTable("By chop tier · strategy", an.by_chop_tier_strategy);
+  tierTable("By chop tier · asset", an.by_chop_tier_asset);
+  for (const [strat, row] of Object.entries(an.by_strategy || {})) {
+    const line = document.createElement("div");
+    line.textContent =
+      strat + ": on " + signedMoney(row.pnl_with_gate) + " vs off " + signedMoney(row.pnl_without_gate) +
+      " (" + (row.gate_improved_pnl ? "gate helped P&L" : "gate hurt or neutral P&L") + ")";
+    rep.appendChild(line);
+  }
+  box.appendChild(rep);
 }
 
 function renderStrategy(state, view) {

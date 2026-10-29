@@ -51,7 +51,9 @@ from desk.engine.weekend_money import (
     load_weekend_prefs,
     weekend_bump_for_params,
 )
-from desk.engine.paper import can_paper_enter, paper_buy, side_to_yes
+from desk.engine.chop_gate_analytics import chop_gate_analytics, enrich_taken_trades
+from desk.engine.chop_gates import CHOP_GATES_KEY, evaluate_chop_gates, load_chop_gates
+from desk.engine.paper import ask_for_side, can_paper_enter, paper_buy, side_to_yes
 from desk.engine.shadow import (
     calibration,
     gates_passed_labels,
@@ -98,6 +100,7 @@ class AssetRT:
     ref_samples: deque = field(default_factory=deque)
     last_meas: dict = field(default_factory=dict)
     last_composite: float | None = None
+    last_kalshi_quote_ts: float = 0.0
     meas_window: WindowFeatureState = field(default_factory=WindowFeatureState)
     meas_book: BookMetricsState = field(default_factory=BookMetricsState)
     meas_liq: LiquidationState = field(default_factory=LiquidationState)
@@ -116,6 +119,9 @@ class Desk:
         stale = self.store.shadow_purge_stale_open(time.time() - 1200)
         if stale:
             print(f"Shadow journal: removed {stale} unscored row(s) from prior windows")
+        chop_stale = self.store.chop_shadow_purge_stale(time.time() - 1200)
+        if chop_stale:
+            print(f"Chop shadow: removed {chop_stale} unscored row(s) from prior windows")
         self.assets = {name: AssetRT(name, meta) for name, meta in self.cfg["assets"].items()}
         self.listeners: list[asyncio.Queue] = []
         self.authed = False
@@ -375,6 +381,15 @@ class Desk:
             else None,
             "measurement_ticks": stamp_rows(self.store.measurement_ticks(60)) if paper_on else [],
             "paper_trade_log": stamp_rows(self.store.paper_trades(40)) if paper_on else [],
+            "chop_gates": load_chop_gates(saved) if paper_on else load_chop_gates({}),
+            "chop_gate_analytics": chop_gate_analytics(
+                self.store.chop_candidates(),
+                self.store.chop_shadow_all(),
+                enrich_taken_trades(self.store.chop_candidates(), self.store.paper_trades()),
+                chop_prefs=load_chop_gates(saved),
+            )
+            if paper_on
+            else None,
             "balances": self._balances_header(assets, rows),
         }
 
@@ -541,6 +556,7 @@ class Desk:
             return
         settings = self.store.settings()
         prefs = load_weekend_prefs(settings)
+        chop_prefs = load_chop_gates(settings)
         is_wk = is_weekend(now, prefs["timezone"])
         modes = load_paper_modes(settings)
         params = view.get("tunable_params") or strategy.get("params") or {}
@@ -549,8 +565,69 @@ class Desk:
             if strategy.get("id") == "weekend_money"
             else 0.0
         )
-        gate_mode = resolve_gate_mode(modes) if strategy.get("id") == "gates_15m" else "normal"
+        metrics = self._metrics(st, now)
+        quote_age = None if st.last_kalshi_quote_ts <= 0 else now - st.last_kalshi_quote_ts
+        chop_meta = view.get("chop") or {}
+        view_gate = {
+            **view,
+            "_paper_modes": modes,
+            "_weekend_bump_cents": bump,
+            "_asset": st.name,
+        }
+        gate = evaluate_chop_gates(
+            prefs=chop_prefs,
+            would_have_entered=True,
+            chop_score=float(chop_meta.get("score") or 0),
+            chop_partial=bool(chop_meta.get("chop_partial")),
+            missing_rows=int(chop_meta.get("missing_rows") or 0),
+            feed_ages=metrics.get("feed_ages"),
+            quote_age_s=quote_age,
+            strategy=strategy,
+            side=detail,
+            view=view_gate,
+            is_weekend=is_wk,
+        )
         mkt = view.get("market") or {}
+        ask = ask_for_side(mkt, detail)
+        entry_fee = fee_dollars(1, ask, rate) if ask is not None else None
+        shadow_id = None
+        if gate.would_have_entered and not gate.allow_entry:
+            shadow_id = self.store.add_chop_shadow(
+                {
+                    "ts": now,
+                    "asset": st.name,
+                    "ticker": ticker,
+                    "strategy": strategy.get("id"),
+                    "side": side_to_yes(detail),
+                    "entry_ask": ask,
+                    "fee": entry_fee,
+                    "chop": chop_meta.get("score"),
+                }
+            )
+        self.store.add_chop_candidate(
+            {
+                "ts": now,
+                "asset": st.name,
+                "ticker": ticker,
+                "strategy": strategy.get("id"),
+                "side": side_to_yes(detail),
+                "chop": chop_meta.get("score"),
+                "chop_partial": chop_meta.get("chop_partial"),
+                "missing_rows": chop_meta.get("missing_rows"),
+                "gate_layer_result": gate.gate_layer_result,
+                "chop_addon_cents": gate.chop_addon_cents,
+                "block_reason": gate.block_reason,
+                "would_have_entered": gate.would_have_entered,
+                "taken": gate.allow_entry,
+                "entry_ask": ask,
+                "fee": entry_fee,
+                "shadow_id": shadow_id,
+            }
+        )
+        st.last_paper_entry = now
+        if not gate.allow_entry:
+            return
+        gate_mode = resolve_gate_mode(modes) if strategy.get("id") == "gates_15m" else "normal"
         bot = view.get("bot") or {}
         trade = view.get("trade") or {}
         hour_et, session = entry_log_meta(now, tz=prefs["timezone"])
@@ -582,7 +659,6 @@ class Desk:
             taker_rate=rate,
             entry_log=entry_log,
         )
-        st.last_paper_entry = now
 
     def _paper_close(self, st: AssetRT, pos: Position, now: float, rate: float) -> None:
         bid = self._exit_bid(st, pos)
@@ -708,6 +784,7 @@ class Desk:
                     )
                     self.store.clear_paper_open(st.name)
             self._settle_shadow(st, self._settlement_ref(st, now))
+            self._settle_chop_shadow(st, self._settlement_ref(st, now))
             self._apply_pending_params(st.name)
             st.book = new_book
             st.chart_ticker = new_book.ticker
@@ -725,6 +802,7 @@ class Desk:
         for key in ("yes_bid", "yes_ask", "no_bid", "no_ask"):
             if market.get(key) is not None:
                 setattr(st.book, key, market[key])
+                st.last_kalshi_quote_ts = now
         st.meas_book.on_book(
             now,
             {
@@ -859,12 +937,39 @@ class Desk:
                 },
             )
 
+    def _settle_chop_shadow(self, st: AssetRT, ref: float | None) -> None:
+        ticker = st.book.ticker or (st.market or {}).get("ticker")
+        if not ticker:
+            return
+        book_strike = st.book.strike
+        rate = float(self.cfg["fees"]["taker_rate"])
+        for row in self.store.chop_shadow_unsettled(ticker):
+            strike = book_strike if book_strike is not None else row.get("strike")
+            settled = settle_shadow_row(
+                {**dict(row), "strike": strike},
+                ref,
+                strike,
+                rate,
+            )
+            self.store.chop_shadow_settle_row(
+                row["id"],
+                {
+                    "settle_composite": settled.get("settle_composite"),
+                    "up_won": settled.get("up_won"),
+                    "right": settled.get("right"),
+                    "exit_px": settled.get("exit_px"),
+                    "net_pnl": settled.get("net_pnl"),
+                    "settle_note": settled.get("settle_note"),
+                },
+            )
+
     def _expire(self, st: AssetRT, now: float) -> None:
         close_ts = (st.market or {}).get("close_ts")
         if close_ts is None or now < close_ts:
             return
         ref = self._settlement_ref(st, now)
         self._settle_shadow(st, ref)
+        self._settle_chop_shadow(st, ref)
         pos = st.book.position
         if pos and pos.ticker == (st.book.ticker or st.market.get("ticker")):
             row = _auto_settle(pos, st.book.strike, ref)
@@ -1360,6 +1465,48 @@ class Desk:
             st.meas_liq.enabled = bool(prefs.get("liquidation"))
         return {"ok": True, "state": self.snapshot()}
 
+    def update_chop_gates(
+        self,
+        *,
+        layer0_enabled: bool | None = None,
+        feed_max_age_s: float | None = None,
+        quote_max_age_s: float | None = None,
+        max_missing_rows: int | None = None,
+        soft_enabled: bool | None = None,
+        tier_low_max: float | None = None,
+        tier_mid_max: float | None = None,
+        addon_below_low_cents: float | None = None,
+        addon_mid_cents: float | None = None,
+        hard_enabled: bool | None = None,
+        chop_hard_min: float | None = None,
+    ) -> dict:
+        prefs = load_chop_gates(self.store.settings())
+        if layer0_enabled is not None:
+            prefs["layer0_enabled"] = bool(layer0_enabled)
+        if feed_max_age_s is not None:
+            prefs["feed_max_age_s"] = float(feed_max_age_s)
+        if quote_max_age_s is not None:
+            prefs["quote_max_age_s"] = float(quote_max_age_s)
+        if max_missing_rows is not None:
+            prefs["max_missing_rows"] = int(max_missing_rows)
+        if soft_enabled is not None:
+            prefs["soft_enabled"] = bool(soft_enabled)
+        if tier_low_max is not None:
+            prefs["tier_low_max"] = float(tier_low_max)
+        if tier_mid_max is not None:
+            prefs["tier_mid_max"] = float(tier_mid_max)
+        if addon_below_low_cents is not None:
+            prefs["addon_below_low_cents"] = float(addon_below_low_cents)
+        if addon_mid_cents is not None:
+            prefs["addon_mid_cents"] = float(addon_mid_cents)
+        if hard_enabled is not None:
+            prefs["hard_enabled"] = bool(hard_enabled)
+        if chop_hard_min is not None:
+            prefs["chop_hard_min"] = float(chop_hard_min)
+        prefs = load_chop_gates({CHOP_GATES_KEY: prefs})
+        self.store.save_setting(CHOP_GATES_KEY, prefs)
+        return {"ok": True, "state": self.snapshot()}
+
     def update_weekend_prefs(
         self,
         *,
@@ -1424,8 +1571,48 @@ class Desk:
         meas_window_features: bool | None = None,
         meas_liquidation: bool | None = None,
         meas_price_buckets: bool | None = None,
+        chop_layer0_enabled: bool | None = None,
+        chop_feed_max_age_s: float | None = None,
+        chop_quote_max_age_s: float | None = None,
+        chop_max_missing_rows: int | None = None,
+        chop_soft_enabled: bool | None = None,
+        chop_tier_low_max: float | None = None,
+        chop_tier_mid_max: float | None = None,
+        chop_addon_below_low_cents: float | None = None,
+        chop_addon_mid_cents: float | None = None,
+        chop_hard_enabled: bool | None = None,
+        chop_hard_min: float | None = None,
     ) -> dict:
         now = time.time()
+        if any(
+            x is not None
+            for x in (
+                chop_layer0_enabled,
+                chop_feed_max_age_s,
+                chop_quote_max_age_s,
+                chop_max_missing_rows,
+                chop_soft_enabled,
+                chop_tier_low_max,
+                chop_tier_mid_max,
+                chop_addon_below_low_cents,
+                chop_addon_mid_cents,
+                chop_hard_enabled,
+                chop_hard_min,
+            )
+        ):
+            return self.update_chop_gates(
+                layer0_enabled=chop_layer0_enabled,
+                feed_max_age_s=chop_feed_max_age_s,
+                quote_max_age_s=chop_quote_max_age_s,
+                max_missing_rows=chop_max_missing_rows,
+                soft_enabled=chop_soft_enabled,
+                tier_low_max=chop_tier_low_max,
+                tier_mid_max=chop_tier_mid_max,
+                addon_below_low_cents=chop_addon_below_low_cents,
+                addon_mid_cents=chop_addon_mid_cents,
+                hard_enabled=chop_hard_enabled,
+                chop_hard_min=chop_hard_min,
+            )
         if any(
             x is not None
             for x in (

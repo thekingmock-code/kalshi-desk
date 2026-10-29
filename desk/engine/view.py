@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from desk.engine.chop import chop_label, chop_score
+from desk.engine.chop import chop_label, chop_score_and_meta
 from desk.engine.gauge import build_gauge
 from desk.engine.model import fair_up, fee_dollars
 from desk.engine.rollover import Position
@@ -88,7 +88,7 @@ def build_asset(
         p_up, sigma_t, eff_s = fair_up(ref, strike, move, secs_left, cfg["model"])
     leader = None if ref is None or strike is None else (1 if ref >= strike else -1)
     lead = None if ref is None or strike is None else ref - strike
-    score, parts = chop_score(
+    score, parts, chop_partial, chop_missing = chop_score_and_meta(
         lead=lead,
         sigma_t=sigma_t if sigma_t > 0 else None,
         lag=lag,
@@ -286,7 +286,13 @@ def build_asset(
         "trade": trade,
         "paper_entry": paper_entry,
         "suggestion": {"action": action, "tone": tone, "reasons": reasons},
-        "chop": {"score": round(score, 1), "label": label, "parts": parts},
+        "chop": {
+            "score": round(score, 1),
+            "label": label,
+            "parts": parts,
+            "chop_partial": chop_partial,
+            "missing_rows": chop_missing,
+        },
         "gates": gates,
         "locked_gates": locked,
         "gate_summary": gate_summary,

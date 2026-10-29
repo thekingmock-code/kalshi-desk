@@ -143,6 +143,43 @@ class Store:
                 ticker TEXT,
                 payload TEXT NOT NULL
             )""",
+            """CREATE TABLE IF NOT EXISTS chop_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                strategy TEXT,
+                side TEXT NOT NULL,
+                chop REAL,
+                chop_partial INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0,
+                gate_layer_result TEXT NOT NULL,
+                chop_addon_cents REAL NOT NULL DEFAULT 0,
+                block_reason TEXT,
+                would_have_entered INTEGER NOT NULL DEFAULT 0,
+                taken INTEGER NOT NULL DEFAULT 0,
+                entry_ask REAL,
+                fee REAL,
+                shadow_id INTEGER
+            )""",
+            """CREATE TABLE IF NOT EXISTS chop_shadow_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                strategy TEXT,
+                side TEXT NOT NULL,
+                entry_ask REAL,
+                fee REAL,
+                chop REAL,
+                settled INTEGER NOT NULL DEFAULT 0,
+                settle_composite REAL,
+                up_won INTEGER,
+                right INTEGER,
+                exit_px REAL,
+                net_pnl REAL,
+                settle_note TEXT
+            )""",
         ):
             try:
                 self.conn.execute(ddl)
@@ -204,6 +241,8 @@ class Store:
         self.conn.execute("DELETE FROM measurement_ticks")
         self.conn.execute("DELETE FROM paper_open")
         self.conn.execute("DELETE FROM shadow_paper")
+        self.conn.execute("DELETE FROM chop_candidates")
+        self.conn.execute("DELETE FROM chop_shadow_trades")
         self.conn.commit()
 
     def shadow_try_insert(self, row: dict) -> bool:
@@ -293,6 +332,115 @@ class Store:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def add_chop_candidate(self, row: dict) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO chop_candidates (
+              ts, asset, ticker, strategy, side, chop, chop_partial, missing_rows,
+              gate_layer_result, chop_addon_cents, block_reason, would_have_entered,
+              taken, entry_ask, fee, shadow_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.get("ts", time.time()),
+                row["asset"],
+                row["ticker"],
+                row.get("strategy"),
+                row["side"],
+                row.get("chop"),
+                1 if row.get("chop_partial") else 0,
+                int(row.get("missing_rows") or 0),
+                row["gate_layer_result"],
+                float(row.get("chop_addon_cents") or 0),
+                row.get("block_reason"),
+                1 if row.get("would_have_entered") else 0,
+                1 if row.get("taken") else 0,
+                row.get("entry_ask"),
+                row.get("fee"),
+                row.get("shadow_id"),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def chop_candidates(self, limit: int = 2000) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM chop_candidates ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_chop_shadow(self, row: dict) -> int:
+        cur = self.conn.execute(
+            """
+            INSERT INTO chop_shadow_trades
+            (ts, asset, ticker, strategy, side, entry_ask, fee, chop)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row.get("ts", time.time()),
+                row["asset"],
+                row["ticker"],
+                row.get("strategy"),
+                row["side"],
+                row.get("entry_ask"),
+                row.get("fee"),
+                row.get("chop"),
+            ),
+        )
+        self.conn.commit()
+        return int(cur.lastrowid)
+
+    def chop_shadow_unsettled(self, ticker: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM chop_shadow_trades WHERE ticker = ? AND settled = 0",
+            (ticker,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def chop_shadow_settle_row(self, row_id: int, updates: dict) -> bool:
+        if updates.get("right") is None or updates.get("net_pnl") is None:
+            return False
+        self.conn.execute(
+            """
+            UPDATE chop_shadow_trades SET
+              settled = 1,
+              settle_composite = ?,
+              up_won = ?,
+              right = ?,
+              exit_px = ?,
+              net_pnl = ?,
+              settle_note = ?
+            WHERE id = ?
+            """,
+            (
+                updates.get("settle_composite"),
+                updates.get("up_won"),
+                updates.get("right"),
+                updates.get("exit_px"),
+                updates.get("net_pnl"),
+                updates.get("settle_note"),
+                row_id,
+            ),
+        )
+        self.conn.commit()
+        return True
+
+    def chop_shadow_all(self, limit: int = 500) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM chop_shadow_trades ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def chop_shadow_purge_stale(self, before_ts: float) -> int:
+        cur = self.conn.execute(
+            "DELETE FROM chop_shadow_trades WHERE settled = 0 AND ts < ?",
+            (before_ts,),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def paper_buy_count(self, ticker: str) -> int:
         row = self.conn.execute("SELECT count FROM paper_buys WHERE ticker = ?", (ticker,)).fetchone()
