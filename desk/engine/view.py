@@ -10,7 +10,9 @@ from desk.engine.gauge import build_gauge
 from desk.engine.model import fair_up, fee_dollars
 from desk.engine.rollover import Position
 from desk.engine.edge_modes import load_paper_modes
-from desk.engine.weekend_money import is_weekend, load_weekend_prefs
+from desk.engine.chop_gates import load_chop_gates
+from desk.engine.gate_utils import gate_passing_stats
+from desk.engine.weekend_money import is_weekend, load_weekend_prefs, weekend_bump_for_params
 from desk.engine.gates_eval import net_edge, net_edge_entry
 from desk.engine.strategies import all_pass, gate_sides
 from desk.engine.tunable import merge_params, shared_slider_defs, slider_defs
@@ -23,9 +25,17 @@ ET = ZoneInfo("America/New_York")
 def _weekend_gate_summary(gates: dict) -> dict:
     def side_stats(side: str) -> dict:
         checks = gates.get(side) or []
-        passing = sum(1 for c in checks if c.get("ok"))
-        blocking = [c.get("label") for c in checks if not c.get("ok")]
-        return {"passing": passing, "total": len(checks), "blocking": blocking}
+        passing, total = gate_passing_stats(checks)
+        blocking = [
+            c.get("label")
+            for c in checks
+            if c.get("counts", True)
+            and (
+                c.get("status") == "fail"
+                or (c.get("status") is None and not c.get("ok"))
+            )
+        ]
+        return {"passing": passing, "total": total, "blocking": blocking}
 
     up, down = side_stats("UP"), side_stats("DOWN")
     fav = "UP" if up["passing"] >= down["passing"] else "DOWN"
@@ -126,15 +136,23 @@ def build_asset(
     weekend_prefs = load_weekend_prefs(settings or {})
     edge_basis = paper_modes.get("edge_basis", "net") if strat.get("id") == "gates_15m" else "net"
     weekend_flag = is_weekend(now, weekend_prefs["timezone"])
-    index_price = index if index_ok else None
+    index_price = index
     ages = feed_ages or {}
     cb_age = ages.get("coinbase")
     kr_age = ages.get("kraken")
     mom_gate = True
     if strat.get("id") == "gates_15m":
         mom_gate = bool(paper_modes.get("momentum_gate_enabled", True))
-    feed_fresh = bool(weekend_prefs.get("feed_freshness_enabled", True)) and strat.get("kind") == "weekend_money"
-    feed_max_age = float(weekend_prefs.get("feed_max_age_secs", 2.0))
+    chop_prefs = load_chop_gates(settings or {})
+    score_adjusted = None
+    if measurements:
+        score_adjusted = (measurements.get("chop") or {}).get("score_adjusted")
+    paper_on = bool((cfg.get("paper") or {}).get("enabled"))
+    wk_bump = (
+        weekend_bump_for_params(params, is_weekend_flag=weekend_flag)
+        if strat.get("kind") == "weekend_money"
+        else 0.0
+    )
     yes_mid = None
     if market.get("yes_bid") is not None and market.get("yes_ask") is not None:
         yes_mid = (market["yes_bid"] + market["yes_ask"]) / 2
@@ -178,9 +196,18 @@ def build_asset(
         index_price=index_price,
         coinbase_age=cb_age,
         kraken_age=kr_age,
-        feed_freshness_enabled=feed_fresh,
-        feed_max_age_secs=feed_max_age,
         momentum_gate_enabled=mom_gate,
+        weekend_bump_cents=wk_bump,
+        paper_enabled=paper_on,
+        chop_log_show_row=bool(chop_prefs.get("show_log_row", True)),
+        chop_log_threshold=float(chop_prefs.get("log_threshold", 30)),
+        chop_log_basis=str(chop_prefs.get("log_basis", "original")),
+        chop_score_original=score,
+        chop_score_adjusted=score_adjusted,
+        taker_rate=rate,
+        g3_settlement_enabled=bool(weekend_prefs.get("g3_settlement_enabled", True)),
+        g4_cost_adjusted_enabled=bool(weekend_prefs.get("g4_cost_adjusted_enabled", True)),
+        g4_cost_pad_cents=float(weekend_prefs.get("g4_cost_pad_cents", 0.5)),
     )
     locked = [c for c in gates.get("UP", []) if c.get("locked")]
     gate_summary = None
@@ -288,6 +315,7 @@ def build_asset(
         "suggestion": {"action": action, "tone": tone, "reasons": reasons},
         "chop": {
             "score": round(score, 1),
+            "score_adjusted": None if score_adjusted is None else round(float(score_adjusted), 1),
             "label": label,
             "parts": parts,
             "chop_partial": chop_partial,

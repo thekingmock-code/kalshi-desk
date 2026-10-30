@@ -54,9 +54,9 @@ def test_late_window_extra_edge():
         params=params,
     )
     checks = locked_checks(ctx)
-    late = [c for c in checks if "Late-window" in c["label"]][0]
+    edge = [c for c in checks if c["label"] == "Edge"][0]
     assert ctx.secs_left < LATE_SECS
-    assert not late["ok"]  # 2.5c < 4c need (2+2)
+    assert not edge["ok"]  # 2.5c < 4c need (2+2)
 
 
 def test_entry_window_locked():

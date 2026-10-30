@@ -51,8 +51,12 @@ from desk.engine.weekend_money import (
     load_weekend_prefs,
     weekend_bump_for_params,
 )
-from desk.engine.chop_gate_analytics import chop_gate_analytics, enrich_taken_trades
-from desk.engine.chop_gates import CHOP_GATES_KEY, evaluate_chop_gates, load_chop_gates
+from desk.engine.chop_log import candidate_log_fields
+from desk.engine.chop_log_analytics import chop_log_analytics
+from desk.engine.chop_gates import CHOP_GATES_KEY, load_chop_gates, reset_chop_soft_defaults
+from desk.engine.gate_utils import all_active_pass, checks_excluding_labels, find_gate, gate_snapshot_json
+from desk.engine.gates_eval import GateContext
+from desk.engine.weekend_money import cost_adjusted_edge_cents
 from desk.engine.paper import ask_for_side, can_paper_enter, paper_buy, side_to_yes
 from desk.engine.shadow import (
     calibration,
@@ -382,11 +386,9 @@ class Desk:
             "measurement_ticks": stamp_rows(self.store.measurement_ticks(60)) if paper_on else [],
             "paper_trade_log": stamp_rows(self.store.paper_trades(40)) if paper_on else [],
             "chop_gates": load_chop_gates(saved) if paper_on else load_chop_gates({}),
-            "chop_gate_analytics": chop_gate_analytics(
+            "chop_log_analytics": chop_log_analytics(
                 self.store.chop_candidates(),
-                self.store.chop_shadow_all(),
-                enrich_taken_trades(self.store.chop_candidates(), self.store.paper_trades()),
-                chop_prefs=load_chop_gates(saved),
+                self.store.paper_trades(),
             )
             if paper_on
             else None,
@@ -565,45 +567,56 @@ class Desk:
             if strategy.get("id") == "weekend_money"
             else 0.0
         )
-        metrics = self._metrics(st, now)
-        quote_age = None if st.last_kalshi_quote_ts <= 0 else now - st.last_kalshi_quote_ts
         chop_meta = view.get("chop") or {}
-        view_gate = {
-            **view,
-            "_paper_modes": modes,
-            "_weekend_bump_cents": bump,
-            "_asset": st.name,
-        }
-        gate = evaluate_chop_gates(
-            prefs=chop_prefs,
-            would_have_entered=True,
-            chop_score=float(chop_meta.get("score") or 0),
-            chop_partial=bool(chop_meta.get("chop_partial")),
-            missing_rows=int(chop_meta.get("missing_rows") or 0),
-            feed_ages=metrics.get("feed_ages"),
-            quote_age_s=quote_age,
-            strategy=strategy,
-            side=detail,
-            view=view_gate,
-            is_weekend=is_wk,
-        )
         mkt = view.get("market") or {}
+        side_checks = (view.get("gates") or {}).get(detail) or []
+        bot = view.get("bot") or {}
+        cheap_side = False
+        for edge_k, ask_k in (("edge_up", "yes_ask"), ("edge_down", "no_ask")):
+            edge_v = bot.get(edge_k)
+            ask_v = mkt.get(ask_k)
+            if edge_v is not None and ask_v is not None and ask_v < 0.05 and edge_v >= 0.05:
+                cheap_side = True
+        g2 = find_gate(side_checks, "G2 Direction")
+        g3 = find_gate(side_checks, "G3 Settlement view")
+        trade = view.get("trade") or {}
+        log_fields = candidate_log_fields(
+            original=chop_meta.get("score"),
+            adjusted=chop_meta.get("score_adjusted"),
+            threshold=float(chop_prefs.get("log_threshold", 30)),
+            basis=str(chop_prefs.get("log_basis", "original")),
+            secs_left=trade.get("secs_left"),
+        )
+        cost_adj = None
+        if strategy.get("kind") == "weekend_money":
+            ctx = GateContext(
+                asset=st.name,
+                side=detail,
+                secs_left=trade.get("secs_left"),
+                bid=mkt.get("yes_bid") if detail == "UP" else mkt.get("no_bid"),
+                ask=ask_for_side(mkt, detail),
+                prob=bot.get("p_up") if detail == "UP" else (None if bot.get("p_up") is None else 1 - bot["p_up"]),
+                flow_pct=None,
+                momentum=None,
+                vol_ratio=None,
+                sigma_t=None,
+                ref=None,
+                strike=mkt.get("strike"),
+                dual_feed_ok=True,
+                feed_detail="",
+                p_up=bot.get("p_up"),
+                yes_mid=mkt.get("yes_mid"),
+                no_mid=mkt.get("no_mid"),
+                net_edge=None,
+                params=params,
+                is_weekend=is_wk,
+                taker_rate=rate,
+                g4_cost_adjusted_enabled=bool(prefs.get("g4_cost_adjusted_enabled", True)),
+                g4_cost_pad_cents=float(prefs.get("g4_cost_pad_cents", 0.5)),
+            )
+            cost_adj = cost_adjusted_edge_cents(ctx)
         ask = ask_for_side(mkt, detail)
         entry_fee = fee_dollars(1, ask, rate) if ask is not None else None
-        shadow_id = None
-        if gate.would_have_entered and not gate.allow_entry:
-            shadow_id = self.store.add_chop_shadow(
-                {
-                    "ts": now,
-                    "asset": st.name,
-                    "ticker": ticker,
-                    "strategy": strategy.get("id"),
-                    "side": side_to_yes(detail),
-                    "entry_ask": ask,
-                    "fee": entry_fee,
-                    "chop": chop_meta.get("score"),
-                }
-            )
         self.store.add_chop_candidate(
             {
                 "ts": now,
@@ -614,19 +627,23 @@ class Desk:
                 "chop": chop_meta.get("score"),
                 "chop_partial": chop_meta.get("chop_partial"),
                 "missing_rows": chop_meta.get("missing_rows"),
-                "gate_layer_result": gate.gate_layer_result,
-                "chop_addon_cents": gate.chop_addon_cents,
-                "block_reason": gate.block_reason,
-                "would_have_entered": gate.would_have_entered,
-                "taken": gate.allow_entry,
+                "gate_layer_result": "log_only",
+                "chop_addon_cents": 0.0,
+                "block_reason": None,
+                "would_have_entered": True,
+                "taken": True,
                 "entry_ask": ask,
                 "fee": entry_fee,
-                "shadow_id": shadow_id,
+                "shadow_id": None,
+                "gate_snapshot": gate_snapshot_json(side_checks),
+                "cost_adjusted_edge": cost_adj,
+                "cheap_side_model_edge": cheap_side,
+                "g2_passed": None if g2 is None else g2.get("status") == "pass" or g2.get("ok"),
+                "g3_passed": None if g3 is None else g3.get("status") == "pass" or g3.get("ok"),
+                **log_fields,
             }
         )
         st.last_paper_entry = now
-        if not gate.allow_entry:
-            return
         gate_mode = resolve_gate_mode(modes) if strategy.get("id") == "gates_15m" else "normal"
         bot = view.get("bot") or {}
         trade = view.get("trade") or {}
@@ -1246,6 +1263,9 @@ class Desk:
         def fee_one(price: float) -> float:
             return fee_dollars(1, price, rate)
 
+        wk_prefs = load_weekend_prefs(self.store.settings())
+        wk_flag = is_weekend(now, wk_prefs["timezone"])
+        chop_score = 0.0
         gates = gate_sides(
             strategy,
             asset=st.name,
@@ -1275,11 +1295,25 @@ class Desk:
             momentum_30=metrics.get("momentum_30"),
             momentum_60=metrics.get("momentum_60"),
             signal_hold_secs=signal_hold_secs,
+            is_weekend=wk_flag,
+            composite=metrics.get("composite"),
+            index_price=metrics.get("index"),
+            chop_log_show_row=bool(load_chop_gates(self.store.settings()).get("show_log_row", True)),
+            chop_log_threshold=float(load_chop_gates(self.store.settings()).get("log_threshold", 30)),
+            chop_log_basis=str(load_chop_gates(self.store.settings()).get("log_basis", "original")),
+            chop_score_original=chop_score,
+            chop_score_adjusted=None,
+            paper_enabled=True,
+            weekend_bump_cents=weekend_bump_for_params(params, is_weekend_flag=wk_flag),
+            taker_rate=rate,
+            g3_settlement_enabled=bool(wk_prefs.get("g3_settlement_enabled", True)),
+            g4_cost_adjusted_enabled=bool(wk_prefs.get("g4_cost_adjusted_enabled", True)),
+            g4_cost_pad_cents=float(wk_prefs.get("g4_cost_pad_cents", 0.5)),
         )
 
         def ready(side: str) -> bool:
-            checks = [c for c in gates.get(side, []) if c.get("label") != "Signal hold"]
-            return bool(checks) and all(c.get("ok") for c in checks)
+            checks = checks_excluding_labels(gates.get(side, []), "Signal hold")
+            return all_active_pass(checks)
 
         edge_up = edge_down = None
         if p_up is not None:
@@ -1468,27 +1502,25 @@ class Desk:
     def update_chop_gates(
         self,
         *,
-        layer0_enabled: bool | None = None,
-        feed_max_age_s: float | None = None,
-        quote_max_age_s: float | None = None,
-        max_missing_rows: int | None = None,
+        log_threshold: float | None = None,
+        log_basis: str | None = None,
+        show_log_row: bool | None = None,
         soft_enabled: bool | None = None,
         tier_low_max: float | None = None,
         tier_mid_max: float | None = None,
         addon_below_low_cents: float | None = None,
         addon_mid_cents: float | None = None,
-        hard_enabled: bool | None = None,
-        chop_hard_min: float | None = None,
+        reset_soft_defaults: bool | None = None,
     ) -> dict:
         prefs = load_chop_gates(self.store.settings())
-        if layer0_enabled is not None:
-            prefs["layer0_enabled"] = bool(layer0_enabled)
-        if feed_max_age_s is not None:
-            prefs["feed_max_age_s"] = float(feed_max_age_s)
-        if quote_max_age_s is not None:
-            prefs["quote_max_age_s"] = float(quote_max_age_s)
-        if max_missing_rows is not None:
-            prefs["max_missing_rows"] = int(max_missing_rows)
+        if reset_soft_defaults:
+            prefs.update(reset_chop_soft_defaults())
+        if log_threshold is not None:
+            prefs["log_threshold"] = float(log_threshold)
+        if log_basis is not None:
+            prefs["log_basis"] = log_basis if log_basis in ("original", "adjusted") else prefs["log_basis"]
+        if show_log_row is not None:
+            prefs["show_log_row"] = bool(show_log_row)
         if soft_enabled is not None:
             prefs["soft_enabled"] = bool(soft_enabled)
         if tier_low_max is not None:
@@ -1499,10 +1531,6 @@ class Desk:
             prefs["addon_below_low_cents"] = float(addon_below_low_cents)
         if addon_mid_cents is not None:
             prefs["addon_mid_cents"] = float(addon_mid_cents)
-        if hard_enabled is not None:
-            prefs["hard_enabled"] = bool(hard_enabled)
-        if chop_hard_min is not None:
-            prefs["chop_hard_min"] = float(chop_hard_min)
         prefs = load_chop_gates({CHOP_GATES_KEY: prefs})
         self.store.save_setting(CHOP_GATES_KEY, prefs)
         return {"ok": True, "state": self.snapshot()}
@@ -1571,47 +1599,41 @@ class Desk:
         meas_window_features: bool | None = None,
         meas_liquidation: bool | None = None,
         meas_price_buckets: bool | None = None,
-        chop_layer0_enabled: bool | None = None,
-        chop_feed_max_age_s: float | None = None,
-        chop_quote_max_age_s: float | None = None,
-        chop_max_missing_rows: int | None = None,
+        chop_log_threshold: float | None = None,
+        chop_log_basis: str | None = None,
+        chop_show_log_row: bool | None = None,
         chop_soft_enabled: bool | None = None,
         chop_tier_low_max: float | None = None,
         chop_tier_mid_max: float | None = None,
         chop_addon_below_low_cents: float | None = None,
         chop_addon_mid_cents: float | None = None,
-        chop_hard_enabled: bool | None = None,
-        chop_hard_min: float | None = None,
+        chop_reset_soft_defaults: bool | None = None,
     ) -> dict:
         now = time.time()
         if any(
             x is not None
             for x in (
-                chop_layer0_enabled,
-                chop_feed_max_age_s,
-                chop_quote_max_age_s,
-                chop_max_missing_rows,
+                chop_log_threshold,
+                chop_log_basis,
+                chop_show_log_row,
                 chop_soft_enabled,
                 chop_tier_low_max,
                 chop_tier_mid_max,
                 chop_addon_below_low_cents,
                 chop_addon_mid_cents,
-                chop_hard_enabled,
-                chop_hard_min,
+                chop_reset_soft_defaults,
             )
         ):
             return self.update_chop_gates(
-                layer0_enabled=chop_layer0_enabled,
-                feed_max_age_s=chop_feed_max_age_s,
-                quote_max_age_s=chop_quote_max_age_s,
-                max_missing_rows=chop_max_missing_rows,
+                log_threshold=chop_log_threshold,
+                log_basis=chop_log_basis,
+                show_log_row=chop_show_log_row,
                 soft_enabled=chop_soft_enabled,
                 tier_low_max=chop_tier_low_max,
                 tier_mid_max=chop_tier_mid_max,
                 addon_below_low_cents=chop_addon_below_low_cents,
                 addon_mid_cents=chop_addon_mid_cents,
-                hard_enabled=chop_hard_enabled,
-                chop_hard_min=chop_hard_min,
+                reset_soft_defaults=chop_reset_soft_defaults,
             )
         if any(
             x is not None

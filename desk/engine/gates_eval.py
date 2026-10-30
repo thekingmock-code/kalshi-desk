@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 from desk.engine import locked as L
+from desk.engine.gate_utils import all_active_pass, gate_check, gate_passing_stats
+from desk.engine.model import fee_dollars
 
 
-def _check(label: str, ok: bool, detail: str, *, locked: bool = False) -> dict:
-    return {"label": label, "ok": bool(ok), "detail": detail, "locked": locked}
+def _check(label: str, ok: bool, detail: str, *, locked: bool = False, **kw) -> dict:
+    return gate_check(label, ok=ok, detail=detail, locked=locked, **kw)
 
 
 @dataclass
@@ -48,9 +50,13 @@ class GateContext:
     index_price: float | None = None
     coinbase_age: float | None = None
     kraken_age: float | None = None
-    feed_freshness_enabled: bool = False
-    feed_max_age_secs: float = 2.0
     momentum_gate_enabled: bool = True
+    chop_addon_cents: float = 0.0
+    weekend_bump_cents: float = 0.0
+    taker_rate: float = 0.07
+    g3_settlement_enabled: bool = True
+    g4_cost_adjusted_enabled: bool = True
+    g4_cost_pad_cents: float = 0.5
 
 
 def net_edge(prob: float | None, ask: float | None, spread: float | None, fee_fn: Callable[[float], float]) -> float | None:
@@ -73,46 +79,85 @@ def gate_edge_value(basis: str, edge_net: float | None, edge_entry: float | None
     return edge_net
 
 
-def basis_gap_check(ctx: GateContext) -> dict:
-    if not ctx.index_ok or ctx.composite is None or ctx.index_price is None:
-        return _check("Basis gap", True, "n/a (no Kalshi index)")
-    gap = abs(ctx.composite - ctx.index_price)
-    cap = float(ctx.params.get("basis_max_usd", 3.0))
-    ok = gap <= cap
-    return _check(
-        "Basis gap",
-        ok,
-        f"|comp−index|=${gap:.2f} max ${cap:.2f}",
+def _late_bonus_cents(secs_left: float | None) -> float:
+    if secs_left is not None and secs_left < L.LATE_SECS:
+        return L.LATE_EDGE_EXTRA * 100.0
+    return 0.0
+
+
+def unified_edge_gate(ctx: GateContext, *, kind: str, ignore_edge_gates: bool = False) -> dict:
+    use_edge = ctx.gate_edge if ctx.gate_edge is not None else ctx.net_edge
+    edge_c = None if use_edge is None else use_edge * 100.0
+    late_c = _late_bonus_cents(ctx.secs_left)
+    weekend_c = float(ctx.weekend_bump_cents or 0.0)
+    spread = None if ctx.ask is None or ctx.bid is None else ctx.ask - ctx.bid
+
+    if kind == "arb":
+        pad = L.ARB_PAD_BASE + (L.ARB_PAD_VOL if (ctx.vol_ratio or 0) > L.ARB_VOL_HOT else 0)
+        base_c = None if spread is None else (spread + pad) * 100.0
+        need_c = None if base_c is None else base_c + late_c
+        ok = ignore_edge_gates or (edge_c is not None and need_c is not None and edge_c >= need_c)
+        detail = (
+            "bypassed (ignore edge)"
+            if ignore_edge_gates
+            else (
+                f"edge {edge_c:.1f}c need {need_c:.1f}c (base + late + chop + weekend)"
+                if edge_c is not None and need_c is not None
+                else "unknown"
+            )
+        )
+        return gate_check(
+            "Edge",
+            ok=bool(ok),
+            detail=detail,
+            hardness="hard",
+            value=edge_c,
+            threshold=need_c,
+        )
+
+    base_c = float(ctx.params.get("net_edge_min", 0.02)) * 100.0
+    need_c = base_c + late_c + weekend_c
+    ok = ignore_edge_gates or (edge_c is not None and edge_c >= need_c)
+    detail = (
+        "bypassed (ignore edge)"
+        if ignore_edge_gates
+        else (
+            f"edge {edge_c:.1f}c need {need_c:.1f}c (base + late + chop + weekend)"
+            if edge_c is not None
+            else "unknown"
+        )
+    )
+    return gate_check(
+        "Edge",
+        ok=bool(ok),
+        detail=detail,
+        locked=True,
+        hardness="hard",
+        value=edge_c,
+        threshold=need_c,
     )
 
 
 def locked_checks(ctx: GateContext, *, ignore_edge_gates: bool = False, skip_divergence: bool = False) -> list[dict]:
     checks: list[dict] = []
-    window_ok = (
-        ctx.secs_left is not None and L.ENTRY_SECS_MIN <= ctx.secs_left <= L.ENTRY_SECS_MAX
-    )
+    window_ok = ctx.secs_left is not None and L.ENTRY_SECS_MIN <= ctx.secs_left <= L.ENTRY_SECS_MAX
     checks.append(
-        _check(
+        gate_check(
             L.LOCKED_LABELS[0],
-            window_ok,
-            "unknown"
+            ok=window_ok,
+            detail="unknown"
             if ctx.secs_left is None
             else f"{ctx.secs_left:.0f}s left (need {L.ENTRY_SECS_MIN:.0f}–{L.ENTRY_SECS_MAX:.0f})",
             locked=True,
+            hardness="hard",
+            value=ctx.secs_left,
+            threshold=(L.ENTRY_SECS_MIN, L.ENTRY_SECS_MAX),
         )
     )
-    checks.append(
-        _check(
-            L.LOCKED_LABELS[1],
-            ctx.dual_feed_ok,
-            ctx.feed_detail,
-            locked=True,
-        )
-    )
-    checks.append(basis_gap_check(ctx))
     mid = ctx.yes_mid if ctx.side == "UP" else ctx.no_mid
     div_ok = True
     div_d = "n/a"
+    div = None
     if ctx.prob is not None and mid is not None:
         div = abs(ctx.prob - mid)
         div_ok = div <= L.MID_DIVERGENCE_VETO
@@ -123,22 +168,18 @@ def locked_checks(ctx: GateContext, *, ignore_edge_gates: bool = False, skip_div
     if skip_divergence:
         div_ok = True
         div_d = (div_d + " · skipped fade") if div_d else "skipped (fade)"
-    checks.append(_check(L.LOCKED_LABELS[2], div_ok, div_d, locked=True))
-    need_extra = ctx.secs_left is not None and ctx.secs_left < L.LATE_SECS
-    edge_need = ctx.params.get("net_edge_min", 0.02)
-    if need_extra:
-        edge_need = float(edge_need) + L.LATE_EDGE_EXTRA
-    use_edge = ctx.gate_edge if ctx.gate_edge is not None else ctx.net_edge
-    late_ok = ignore_edge_gates or (use_edge is not None and use_edge >= edge_need)
-    edge_s = "unknown" if use_edge is None else f"{use_edge * 100:+.1f}¢"
     checks.append(
-        _check(
-            L.LOCKED_LABELS[3],
-            late_ok,
-            "bypassed (ignore edge)" if ignore_edge_gates else edge_s + f" need {edge_need * 100:.1f}¢" + (" (+2¢ late)" if need_extra else ""),
+        gate_check(
+            L.LOCKED_LABELS[1],
+            ok=div_ok,
+            detail=div_d,
             locked=True,
+            hardness="hard",
+            value=div if ctx.prob is not None and mid is not None else None,
+            threshold=L.MID_DIVERGENCE_VETO,
         )
     )
+    checks.append(unified_edge_gate(ctx, kind="gates", ignore_edge_gates=ignore_edge_gates))
     return checks
 
 
@@ -158,135 +199,193 @@ def _trend_sigma_ok(ctx: GateContext) -> tuple[bool, str]:
 def strategy_checks(kind: str, ctx: GateContext, *, ignore_edge_gates: bool = False) -> list[dict]:
     checks: list[dict] = []
     spread = None if ctx.ask is None or ctx.bid is None else ctx.ask - ctx.bid
-    use_edge = ctx.gate_edge if ctx.gate_edge is not None else ctx.net_edge
-    edge_s = "unknown" if use_edge is None else f"{use_edge * 100:+.1f}¢"
 
     if kind == "gates":
-        need = float(ctx.params.get("net_edge_min", 0.02))
-        edge_ok = ignore_edge_gates or (use_edge is not None and use_edge >= need)
-        checks.append(_check("Net edge", edge_ok, "bypassed" if ignore_edge_gates else edge_s))
+        checks.append(unified_edge_gate(ctx, kind="gates", ignore_edge_gates=ignore_edge_gates))
         t_ok, t_d = _trend_sigma_ok(ctx)
-        checks.append(_check("Trend σ", t_ok, t_d))
+        checks.append(gate_check("Trend σ", ok=t_ok, detail=t_d, hardness="soft"))
         if ctx.momentum_gate_enabled:
             agrees = ctx.momentum is not None and ctx.momentum > 0
             checks.append(
-                _check(
+                gate_check(
                     "Momentum agrees",
-                    agrees,
-                    "flat" if not ctx.momentum else ("with" if agrees else "against"),
+                    ok=agrees,
+                    detail="flat" if not ctx.momentum else ("with" if agrees else "against"),
+                    hardness="soft",
                 )
             )
         else:
-            checks.append(_check("Momentum agrees", True, "off"))
+            checks.append(
+                gate_check(
+                    "Momentum agrees",
+                    ok=False,
+                    detail="off",
+                    status="off",
+                    counts=False,
+                    hardness="soft",
+                )
+            )
         flow_need = float(ctx.params.get("flow_min", 0.58)) * 100
         flow_ok = ctx.flow_pct is not None and ctx.flow_pct >= flow_need
         checks.append(
-            _check("Taker flow", flow_ok, "unknown" if ctx.flow_pct is None else f"{ctx.flow_pct:.0f}%")
+            gate_check(
+                "Taker flow",
+                ok=flow_ok,
+                detail="unknown" if ctx.flow_pct is None else f"{ctx.flow_pct:.0f}%",
+                hardness="soft",
+                value=ctx.flow_pct,
+                threshold=flow_need,
+            )
         )
         vmin = float(ctx.params.get("vol_min", 0.5))
         vmax = float(ctx.params.get("vol_max", 2.0))
         vol_ok = ctx.vol_ratio is not None and vmin <= ctx.vol_ratio <= vmax
         checks.append(
-            _check(
+            gate_check(
                 "Vol band",
-                vol_ok,
-                "unknown" if ctx.vol_ratio is None else f"{ctx.vol_ratio:.2f}× ({vmin}–{vmax})",
+                ok=vol_ok,
+                detail="unknown" if ctx.vol_ratio is None else f"{ctx.vol_ratio:.2f}× ({vmin}–{vmax})",
+                hardness="soft",
+                value=ctx.vol_ratio,
+                threshold=(vmin, vmax),
             )
         )
         floor = float(ctx.params.get("ask_floor", 0.35))
         cap = float(ctx.params.get("ask_cap", 0.65))
         band_ok = ctx.ask is not None and floor <= ctx.ask <= cap
         checks.append(
-            _check("Ask band", band_ok, "unknown" if ctx.ask is None else f"{ctx.ask * 100:.0f}¢")
+            gate_check(
+                "Ask band",
+                ok=band_ok,
+                detail="unknown" if ctx.ask is None else f"{ctx.ask * 100:.0f}¢",
+                hardness="hard",
+                value=ctx.ask,
+                threshold=(floor, cap),
+            )
         )
         sm = float(ctx.params.get("spread_max", 0.03))
         sp_ok = spread is not None and spread <= sm
-        checks.append(_check("Spread", sp_ok, "unknown" if spread is None else f"{spread * 100:.1f}¢"))
+        checks.append(
+            gate_check(
+                "Spread",
+                ok=sp_ok,
+                detail="unknown" if spread is None else f"{spread * 100:.1f}¢",
+                hardness="hard",
+                value=spread,
+                threshold=sm,
+            )
+        )
         return checks
 
     if kind == "arb":
-        window = (
-            ctx.secs_left is not None and L.ARB_WINDOW_MIN <= ctx.secs_left <= L.ARB_WINDOW_MAX
-        )
+        window = ctx.secs_left is not None and L.ARB_WINDOW_MIN <= ctx.secs_left <= L.ARB_WINDOW_MAX
         checks.append(
-            _check("Arb window", window, "unknown" if ctx.secs_left is None else f"{ctx.secs_left:.0f}s")
+            gate_check(
+                "Arb window",
+                ok=window,
+                detail="unknown" if ctx.secs_left is None else f"{ctx.secs_left:.0f}s",
+                hardness="hard",
+                value=ctx.secs_left,
+                threshold=(L.ARB_WINDOW_MIN, L.ARB_WINDOW_MAX),
+            )
         )
         stale = False
         stale_d = "n/a"
         if ctx.composite_pct_move_3s is not None and ctx.kalshi_mid_move_3s is not None:
             stale = ctx.composite_pct_move_3s >= L.ARB_STALE_COMPOSITE_PCT and abs(ctx.kalshi_mid_move_3s) < 1e-6
             stale_d = f"comp {ctx.composite_pct_move_3s * 100:.3f}% · mid Δ{ctx.kalshi_mid_move_3s * 100:.3f}%"
-        checks.append(_check("Stale quote trigger", stale, stale_d))
+        checks.append(
+            gate_check(
+                "Stale quote trigger",
+                ok=stale,
+                detail=stale_d,
+                hardness="hard",
+                value=ctx.composite_pct_move_3s,
+                threshold=L.ARB_STALE_COMPOSITE_PCT,
+            )
+        )
         floor = float(ctx.params.get("ask_floor", 0.35))
         cap = float(ctx.params.get("ask_cap", 0.65))
         band_ok = ctx.ask is not None and floor <= ctx.ask <= cap
-        checks.append(_check("Ask band", band_ok, "unknown" if ctx.ask is None else f"{ctx.ask * 100:.0f}¢"))
-        pad = L.ARB_PAD_BASE + (L.ARB_PAD_VOL if (ctx.vol_ratio or 0) > L.ARB_VOL_HOT else 0)
-        need = None if spread is None else spread + pad
-        edge_ok = ctx.net_edge is not None and need is not None and ctx.net_edge >= need
         checks.append(
-            _check(
-                "Edge vs spread+pad",
-                edge_ok,
-                edge_s if need is None else f"{edge_s} vs {need * 100:.1f}¢",
+            gate_check(
+                "Ask band",
+                ok=band_ok,
+                detail="unknown" if ctx.ask is None else f"{ctx.ask * 100:.0f}¢",
+                hardness="hard",
             )
         )
+        checks.append(unified_edge_gate(ctx, kind="arb", ignore_edge_gates=ignore_edge_gates))
         sm = float(ctx.params.get("spread_max", 0.03))
-        checks.append(_check("Spread", spread is not None and spread <= sm, "unknown" if spread is None else ""))
+        checks.append(
+            gate_check(
+                "Spread",
+                ok=spread is not None and spread <= sm,
+                detail="unknown" if spread is None else "",
+                hardness="hard",
+            )
+        )
         return checks
 
     if kind == "sol":
         if ctx.asset != "SOL":
-            return [_check("SOL only", False, ctx.asset)]
+            return [gate_check("SOL only", ok=False, detail=ctx.asset, hardness="hard")]
         band_ok = ctx.ask is not None and L.SOL_ASK_MIN <= ctx.ask <= L.SOL_ASK_MAX
-        checks.append(_check("Ask band", band_ok, "unknown" if ctx.ask is None else f"{ctx.ask * 100:.0f}¢"))
+        checks.append(gate_check("Ask band", ok=band_ok, detail="unknown" if ctx.ask is None else f"{ctx.ask * 100:.0f}¢", hardness="hard"))
+        use_edge = ctx.gate_edge if ctx.gate_edge is not None else ctx.net_edge
+        edge_s = "unknown" if use_edge is None else f"{use_edge * 100:+.1f}¢"
         checks.append(
-            _check(
-                "Net edge",
-                ctx.net_edge is not None and ctx.net_edge >= L.SOL_NET_EDGE_MIN,
-                edge_s,
+            gate_check(
+                "Edge",
+                ok=use_edge is not None and use_edge >= L.SOL_NET_EDGE_MIN,
+                detail=edge_s,
+                hardness="hard",
             )
         )
         t_ok, t_d = _trend_sigma_ok(ctx)
         agrees = ctx.momentum is not None and ctx.momentum > 0
         prob_ok = ctx.prob is not None and ctx.prob >= 0.5
-        checks.append(_check("Trend + momentum", t_ok and agrees and prob_ok, t_d))
+        checks.append(gate_check("Trend + momentum", ok=t_ok and agrees and prob_ok, detail=t_d, hardness="soft"))
         btc_ok = ctx.btc_momentum is None or (ctx.btc_momentum > 0 and agrees) or (ctx.btc_momentum < 0 and not agrees)
-        checks.append(_check("BTC confirms", btc_ok, "BTC mom aligned" if btc_ok else "BTC disagrees"))
+        checks.append(gate_check("BTC confirms", ok=btc_ok, detail="BTC mom aligned" if btc_ok else "BTC disagrees", hardness="soft"))
         chase = ctx.vol_ratio is not None and ctx.vol_ratio > 2.2 and ctx.momentum is not None and ctx.momentum != 0
-        checks.append(_check("Spike/chase filter", not chase, "spike" if chase else "ok"))
+        checks.append(gate_check("Spike/chase filter", ok=not chase, detail="spike" if chase else "ok", hardness="soft"))
         confirm_ok = ctx.sol_confirm_secs is not None and ctx.sol_confirm_secs >= L.SOL_CONFIRM_SECS
         checks.append(
-            _check(
+            gate_check(
                 "3s entry confirm",
-                confirm_ok,
-                "unknown" if ctx.sol_confirm_secs is None else f"{ctx.sol_confirm_secs:.1f}s",
+                ok=confirm_ok,
+                detail="unknown" if ctx.sol_confirm_secs is None else f"{ctx.sol_confirm_secs:.1f}s",
+                hardness="hard",
             )
         )
         return checks
 
     if kind == "scanner":
         cheap = ctx.ask is not None and ctx.ask <= L.SUB25_ASK_MAX
-        checks.append(_check("Ask ≤25¢", cheap, "unknown" if ctx.ask is None else f"{ctx.ask * 100:.1f}¢"))
+        checks.append(gate_check("Ask ≤25¢", ok=cheap, detail="unknown" if ctx.ask is None else f"{ctx.ask * 100:.1f}¢", hardness="hard"))
+        use_edge = ctx.gate_edge if ctx.gate_edge is not None else ctx.net_edge
+        edge_s = "unknown" if use_edge is None else f"{use_edge * 100:+.1f}¢"
         checks.append(
-            _check(
-                "Net edge",
-                ctx.net_edge is not None and ctx.net_edge >= L.SUB25_EDGE_MIN,
-                edge_s,
+            gate_check(
+                "Edge",
+                ok=use_edge is not None and use_edge >= L.SUB25_EDGE_MIN,
+                detail=edge_s,
+                hardness="hard",
             )
         )
         outside = ctx.secs_left is not None and ctx.secs_left > L.SUB25_BLACKOUT
-        checks.append(_check("Outside last 2m", outside, "unknown" if ctx.secs_left is None else f"{ctx.secs_left:.0f}s"))
+        checks.append(gate_check("Outside last 2m", ok=outside, detail="unknown" if ctx.secs_left is None else f"{ctx.secs_left:.0f}s", hardness="hard"))
         if ctx.momentum is not None and ctx.momentum > 0:
-            checks.append(_check("Breakout (YES only)", ctx.side == "UP", "YES breakout lane"))
+            checks.append(gate_check("Breakout (YES only)", ok=ctx.side == "UP", detail="YES breakout lane", hardness="soft"))
         elif ctx.momentum is not None and ctx.momentum < 0:
-            checks.append(_check("Exhaustion (NO only)", ctx.side == "DOWN", "NO exhaustion lane"))
+            checks.append(gate_check("Exhaustion (NO only)", ok=ctx.side == "DOWN", detail="NO exhaustion lane", hardness="soft"))
         else:
-            checks.append(_check("Breakout / exhaustion", False, "flat momentum"))
-        checks.append(_check("Log only", True, "not wired to paper"))
+            checks.append(gate_check("Breakout / exhaustion", ok=False, detail="flat momentum", hardness="soft"))
+        checks.append(gate_check("Log only", ok=True, detail="not wired to paper", counts=False, hardness="soft"))
         return checks
 
-    return [_check("Strategy", False, kind or "unknown")]
+    return [gate_check("Strategy", ok=False, detail=kind or "unknown", hardness="hard")]
 
 
 def evaluate_side(
@@ -300,17 +399,23 @@ def evaluate_side(
     del fee_fn
     kind = strategy.get("kind")
     if kind == "hour":
-        return [_check("15m desk only", False, "use 1h product")]
+        return [gate_check("15m desk only", ok=False, detail="use 1h product", hardness="hard")]
     if kind == "weekend_money":
         from desk.engine.weekend_money import weekend_checks
 
-        return [basis_gap_check(ctx_base)] + weekend_checks(
-            ctx_base, ignore_edge_gates=ignore_edge_gates
-        )
+        return weekend_checks(ctx_base, ignore_edge_gates=ignore_edge_gates)
+    if kind == "arb":
+        return strategy_checks("arb", ctx_base, ignore_edge_gates=ignore_edge_gates)
     locked = locked_checks(ctx_base, ignore_edge_gates=ignore_edge_gates, skip_divergence=skip_divergence)
     strat = strategy_checks(kind, ctx_base, ignore_edge_gates=ignore_edge_gates)
+    if kind == "gates":
+        strat = [c for c in strat if c.get("label") != "Edge"]
     return locked + strat
 
 
 def all_pass(checks: list[dict]) -> bool:
-    return bool(checks) and all(c["ok"] for c in checks)
+    return all_active_pass(checks)
+
+
+def passing_count(checks: list[dict]) -> tuple[int, int]:
+    return gate_passing_stats(checks)

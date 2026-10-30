@@ -6,14 +6,9 @@ from typing import Any
 
 ASSETS = ("BTC", "SOL", "BNB")
 
-SHARED_KEYS = ("basis_max_usd", "quote_lag_move_usd")
+SHARED_KEYS = ("quote_lag_move_usd",)
 
 _SHARED_SCHEMA: dict[str, dict[str, tuple[float, float, float]]] = {
-    "basis_max_usd": {
-        "BTC": (3.0, 0.5, 15.0),
-        "SOL": (0.05, 0.01, 2.0),
-        "BNB": (0.05, 0.01, 2.0),
-    },
     "quote_lag_move_usd": {
         "BTC": (5.0, 1.0, 50.0),
         "SOL": (0.05, 0.01, 2.0),
@@ -130,7 +125,6 @@ SLIDER_META: dict[str, dict[str, Any]] = {
     "prob_edge_min_cents": {"label": "Prob edge min", "step": 0.5, "unit": "cents_raw"},
     "weekend_bump_cents": {"label": "Weekend G4 bump (c)", "step": 0.5, "unit": "cents_raw"},
     "entry_hold_secs": {"label": "Signal hold", "step": 1, "unit": "seconds"},
-    "basis_max_usd": {"label": "Basis max (|comp−index|)", "step": 0.05, "unit": "usd"},
     "quote_lag_move_usd": {"label": "Quote lag composite move", "step": 0.05, "unit": "usd"},
 }
 

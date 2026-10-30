@@ -223,6 +223,10 @@
   .check b { font-weight: 700; }
   .pass b { color: var(--green); }
   .fail b { color: var(--red); }
+  .off b, .check.off b { color: var(--muted); }
+  .log-ok b { color: var(--muted); }
+  .log-warn b { color: #e8a317; }
+  .gate-tag { color: var(--muted); font-size: 10px; margin-right: 4px; }
   .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; font-size: 12px; margin-bottom: 8px; }
   .table-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; font-size: 11px; white-space: nowrap; }
@@ -910,8 +914,12 @@ function renderChop(view, state) {
   const gatesRoot = document.createElement("div");
   gatesRoot.className = "paper-modes";
   const gh = document.createElement("h3");
-  gh.textContent = "CHOP GATES (PAPER)";
+  gh.textContent = "CHOP LOG (PAPER)";
   gatesRoot.appendChild(gh);
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent = "Log-only — never blocks entries or changes required edge.";
+  gatesRoot.appendChild(note);
 
   function chopToggle(labelText, key, checked) {
     const lab = document.createElement("label");
@@ -923,7 +931,7 @@ function renderChop(view, state) {
     lab.append(cb, document.createTextNode(" " + labelText));
     return lab;
   }
-  gatesRoot.appendChild(chopToggle("Layer 0 · data integrity", "chop_layer0_enabled", cg.layer0_enabled !== false));
+  gatesRoot.appendChild(chopToggle("Show Chop log row", "chop_show_log_row", cg.show_log_row !== false));
 
   function chopSlider(label, key, val, min, max, step, fmt) {
     const lab = document.createElement("label");
@@ -946,81 +954,113 @@ function renderChop(view, state) {
     lab.append(top, inp);
     return lab;
   }
-  gatesRoot.appendChild(chopSlider("Feed max age (s)", "chop_feed_max_age_s", cg.feed_max_age_s ?? 2, 0.5, 10, 0.5, (v) => v + "s"));
-  gatesRoot.appendChild(chopSlider("Kalshi quote max age (s)", "chop_quote_max_age_s", cg.quote_max_age_s ?? 5, 0.5, 30, 0.5, (v) => v + "s"));
-  gatesRoot.appendChild(chopSlider("Max missing chop rows (partial)", "chop_max_missing_rows", cg.max_missing_rows ?? 2, 0, 3, 1, (v) => String(v)));
+  gatesRoot.appendChild(chopSlider("Chop log threshold", "chop_log_threshold", cg.log_threshold ?? 30, 0, 100, 1, (v) => v));
 
-  gatesRoot.appendChild(chopToggle("Chop soft gate", "chop_soft_enabled", cg.soft_enabled));
-  gatesRoot.appendChild(chopSlider("Tier low max (score)", "chop_tier_low_max", cg.tier_low_max ?? 30, 0, 100, 1, (v) => v));
-  gatesRoot.appendChild(chopSlider("Tier mid max (score)", "chop_tier_mid_max", cg.tier_mid_max ?? 50, 0, 100, 1, (v) => v));
+  const basis = document.createElement("label");
+  basis.className = "toggle";
+  const basisSel = document.createElement("select");
+  for (const opt of [["original", "Original"], ["adjusted", "Adjusted"]]) {
+    const o = document.createElement("option");
+    o.value = opt[0];
+    o.textContent = "Chop log uses: " + opt[1];
+    if ((cg.log_basis || "original") === opt[0]) o.selected = true;
+    basisSel.appendChild(o);
+  }
+  basisSel.onchange = () => postJSON("/api/settings", { chop_log_basis: basisSel.value });
+  basis.append(basisSel);
+  gatesRoot.appendChild(basis);
+
+  const softH = document.createElement("h3");
+  softH.textContent = "SOFT TIER DEFAULTS (LOG REFERENCE ONLY)";
+  gatesRoot.appendChild(softH);
+  gatesRoot.appendChild(chopToggle("Chop soft gate (no effect on edge)", "chop_soft_enabled", cg.soft_enabled));
+  gatesRoot.appendChild(chopSlider("Tier low max", "chop_tier_low_max", cg.tier_low_max ?? 30, 0, 100, 1, (v) => v));
+  gatesRoot.appendChild(chopSlider("Tier mid max", "chop_tier_mid_max", cg.tier_mid_max ?? 50, 0, 100, 1, (v) => v));
   gatesRoot.appendChild(chopSlider("Addon below low (¢)", "chop_addon_below_low_cents", cg.addon_below_low_cents ?? 2, 0, 10, 0.5, (v) => v + "c"));
   gatesRoot.appendChild(chopSlider("Addon mid tier (¢)", "chop_addon_mid_cents", cg.addon_mid_cents ?? 1, 0, 10, 0.5, (v) => v + "c"));
-
-  gatesRoot.appendChild(chopToggle("Chop hard gate", "chop_hard_enabled", cg.hard_enabled));
-  if (cg.hard_enabled) {
-    const warn = document.createElement("p");
-    warn.className = "muted";
-    warn.textContent = "Needs backtest support first.";
-    gatesRoot.appendChild(warn);
-  }
-  gatesRoot.appendChild(chopSlider("Hard min chop score", "chop_hard_min", cg.chop_hard_min ?? 0, 0, 60, 1, (v) => v));
+  const hardNote = document.createElement("p");
+  hardNote.className = "muted";
+  hardNote.textContent = "Chop hard gate: log-only (disabled).";
+  gatesRoot.appendChild(hardNote);
+  const resetBtn = document.createElement("button");
+  resetBtn.type = "button";
+  resetBtn.className = "ghost";
+  resetBtn.textContent = "Reset chop defaults";
+  resetBtn.onclick = () => postJSON("/api/settings", { chop_reset_soft_defaults: true });
+  gatesRoot.appendChild(resetBtn);
   box.appendChild(gatesRoot);
 
-  const an = state.chop_gate_analytics;
+  const an = state.chop_log_analytics;
   if (!an) return;
   const rep = document.createElement("div");
   rep.className = "stats";
   const rh = document.createElement("h3");
-  rh.textContent = "GATE REPORT";
+  rh.textContent = "CHOP LOG REPORT";
   rep.appendChild(rh);
-  function statCell(title, row) {
-    const cell = document.createElement("div");
-    const a = document.createElement("div");
-    a.className = "muted";
-    a.textContent = title;
-    const b = document.createElement("div");
-    const n = row?.n_settled ?? row?.count ?? 0;
-    b.textContent = (row?.count ?? 0) + " · WR " + rate(row?.win_rate) + " · " + signedMoney(row?.net_pnl ?? 0) + " (n=" + n + ")";
-    cell.append(a, b);
-    return cell;
+  function cellLine(title, row) {
+    const line = document.createElement("div");
+    line.className = row?.low_n ? "muted" : "";
+    const n = row?.n_settled ?? 0;
+    line.textContent = title + ": n=" + n + " · WR " + rate(row?.win_rate) + " · " + signedMoney(row?.net_pnl ?? 0);
+    rep.appendChild(line);
   }
-  rep.appendChild(statCell("Taken trades", an.taken_trades));
-  rep.appendChild(statCell("Shadow (blocked)", an.shadow_trades));
-  const pnlLine = document.createElement("p");
-  pnlLine.textContent =
-    "P&L with gate on: " + signedMoney(an.pnl_with_gate) +
-    " · without (incl. shadow): " + signedMoney(an.pnl_without_gate) +
-    " · Gate " + (an.gate_improved_total_pnl ? "improved" : "did not improve") + " total P&L";
-  rep.appendChild(pnlLine);
-
-  function tierTable(title, map) {
-    if (!map || !Object.keys(map).length) return;
+  cellLine("Taken · chop log OK", an.would_pass);
+  cellLine("Taken · would-block", an.would_block);
+  const ifBlocked = document.createElement("p");
+  ifBlocked.textContent =
+    "If blocked: would-block P&L " + signedMoney(an.pnl_if_blocked_would_trades) +
+    " · without them " + signedMoney(an.pnl_without_would_block_trades) +
+    " · all taken " + signedMoney(an.pnl_all_taken);
+  rep.appendChild(ifBlocked);
+  const summary = document.createElement("p");
+  summary.textContent =
+    "Would-block trades " + (an.would_block_underperform ? "underperform" : "do not clearly underperform") +
+    " (P&L gap would−ok " + signedMoney(an.pnl_gap_would_minus_ok) + ")";
+  rep.appendChild(summary);
+  function splitTable(title, block) {
+    if (!block) return;
     const sub = document.createElement("div");
     sub.className = "muted";
     sub.textContent = title;
     rep.appendChild(sub);
-    for (const [group, tiers] of Object.entries(map)) {
-      for (const [tier, cell] of Object.entries(tiers)) {
-        const row = document.createElement("div");
-        row.className = cell.low_n ? "muted" : "";
-        row.textContent =
-          group + " · chop " + tier + " · taken n=" + (cell.taken?.n_settled ?? 0) +
-          " shadow n=" + (cell.shadow?.n_settled ?? 0) +
-          " · WR T " + rate(cell.taken?.win_rate) + " S " + rate(cell.shadow?.win_rate);
-        rep.appendChild(row);
-      }
+    for (const [dim, row] of Object.entries(block.would_block || {})) {
+      cellLine(dim + " · would-block", row);
+    }
+    for (const [dim, row] of Object.entries(block.ok || {})) {
+      cellLine(dim + " · ok", row);
     }
   }
-  tierTable("By chop tier · strategy", an.by_chop_tier_strategy);
-  tierTable("By chop tier · asset", an.by_chop_tier_asset);
-  for (const [strat, row] of Object.entries(an.by_strategy || {})) {
-    const line = document.createElement("div");
-    line.textContent =
-      strat + ": on " + signedMoney(row.pnl_with_gate) + " vs off " + signedMoney(row.pnl_without_gate) +
-      " (" + (row.gate_improved_pnl ? "gate helped P&L" : "gate hurt or neutral P&L") + ")";
-    rep.appendChild(line);
-  }
+  splitTable("By strategy", an.by_strategy);
+  splitTable("By asset", an.by_asset);
+  splitTable("By time bucket", an.by_secs_bucket);
   box.appendChild(rep);
+}
+
+function formatGateCheck(check) {
+  const tag = check.tag || (check.hardness === "hard" ? "H" : check.hardness === "soft" ? "S" : check.hardness === "log" ? "L" : "");
+  const st = check.status || (check.ok ? "pass" : "fail");
+  let statusWord;
+  let cls;
+  if (st === "off") {
+    statusWord = "OFF";
+    cls = "off";
+  } else if (st === "waiting") {
+    statusWord = "WAITING";
+    cls = "wait";
+  } else if (st === "log_ok") {
+    statusWord = "OK";
+    cls = "log-ok";
+  } else if (st === "log_would_block") {
+    statusWord = "WOULD BLOCK";
+    cls = "log-warn";
+  } else if (st === "pass" || (st !== "fail" && check.ok)) {
+    statusWord = "PASS";
+    cls = "pass";
+  } else {
+    statusWord = "FAIL";
+    cls = "fail";
+  }
+  return { tag, statusWord, cls };
 }
 
 function renderStrategy(state, view) {
@@ -1117,9 +1157,16 @@ function renderStrategy(state, view) {
     box.appendChild(h);
     for (const check of locked) {
       const row = document.createElement("div");
-      row.className = "check " + (check.ok ? "pass" : "fail");
+      const fmt = formatGateCheck(check);
+      row.className = "check " + fmt.cls;
       const name = document.createElement("b");
-      name.textContent = (check.ok ? "PASS " : "FAIL ") + check.label;
+      name.textContent = fmt.statusWord + " " + check.label;
+      if (fmt.tag) {
+        const tg = document.createElement("span");
+        tg.className = "gate-tag";
+        tg.textContent = fmt.tag;
+        row.appendChild(tg);
+      }
       const detail = document.createElement("div");
       detail.className = "muted";
       detail.textContent = check.detail || "";
@@ -1136,9 +1183,16 @@ function renderStrategy(state, view) {
     col.appendChild(h);
     for (const check of (view.gates && view.gates[side]) || []) {
       const row = document.createElement("div");
-      row.className = "check " + (check.ok ? "pass" : "fail");
+      const fmt = formatGateCheck(check);
+      row.className = "check " + fmt.cls;
       const name = document.createElement("b");
-      name.textContent = (check.ok ? "PASS " : "FAIL ") + check.label;
+      name.textContent = fmt.statusWord + " " + check.label;
+      if (fmt.tag) {
+        const tg = document.createElement("span");
+        tg.className = "gate-tag";
+        tg.textContent = fmt.tag;
+        row.appendChild(tg);
+      }
       const detail = document.createElement("div");
       detail.className = "muted";
       detail.textContent = check.detail || "";

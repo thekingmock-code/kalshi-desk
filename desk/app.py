@@ -45,17 +45,15 @@ class SettingBody(BaseModel):
     meas_window_features: bool | None = None
     meas_liquidation: bool | None = None
     meas_price_buckets: bool | None = None
-    chop_layer0_enabled: bool | None = None
-    chop_feed_max_age_s: float | None = None
-    chop_quote_max_age_s: float | None = None
-    chop_max_missing_rows: int | None = None
+    chop_log_threshold: float | None = None
+    chop_log_basis: str | None = None
+    chop_show_log_row: bool | None = None
     chop_soft_enabled: bool | None = None
     chop_tier_low_max: float | None = None
     chop_tier_mid_max: float | None = None
     chop_addon_below_low_cents: float | None = None
     chop_addon_mid_cents: float | None = None
-    chop_hard_enabled: bool | None = None
-    chop_hard_min: float | None = None
+    chop_reset_soft_defaults: bool | None = None
 
 
 @app.get("/")
@@ -119,17 +117,15 @@ async def settings(body: SettingBody):
             meas_window_features=body.meas_window_features,
             meas_liquidation=body.meas_liquidation,
             meas_price_buckets=body.meas_price_buckets,
-            chop_layer0_enabled=body.chop_layer0_enabled,
-            chop_feed_max_age_s=body.chop_feed_max_age_s,
-            chop_quote_max_age_s=body.chop_quote_max_age_s,
-            chop_max_missing_rows=body.chop_max_missing_rows,
+            chop_log_threshold=body.chop_log_threshold,
+            chop_log_basis=body.chop_log_basis,
+            chop_show_log_row=body.chop_show_log_row,
             chop_soft_enabled=body.chop_soft_enabled,
             chop_tier_low_max=body.chop_tier_low_max,
             chop_tier_mid_max=body.chop_tier_mid_max,
             chop_addon_below_low_cents=body.chop_addon_below_low_cents,
             chop_addon_mid_cents=body.chop_addon_mid_cents,
-            chop_hard_enabled=body.chop_hard_enabled,
-            chop_hard_min=body.chop_hard_min,
+            chop_reset_soft_defaults=body.chop_reset_soft_defaults,
         )
 
 

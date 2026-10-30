@@ -6,15 +6,8 @@ from desk.engine.gates_eval import all_pass, net_edge, net_edge_entry
 
 PAPER_SETTINGS_KEY = "gates_15m_paper"
 
-DIVERGENCE_LABEL = L.LOCKED_LABELS[2]
-LATE_EDGE_LABEL = L.LOCKED_LABELS[3]
-EDGE_GATE_LABELS = frozenset(
-    {
-        "Net edge",
-        LATE_EDGE_LABEL,
-        "G4 Prob edge",
-    }
-)
+DIVERGENCE_LABEL = L.LOCKED_LABELS[1]
+EDGE_GATE_LABELS = frozenset({"Edge", "G4 Prob edge"})
 
 FADE_STRATEGY_KEEP = frozenset({"Ask band", "Spread"})
 
@@ -133,7 +126,7 @@ def filter_checks_for_paper(checks: list[dict], *, modes: dict, strategy_kind: s
     """Mark edge/divergence checks pass when modes allow (for paper entry evaluation)."""
     ignore = bool(modes.get("ignore_edge_gate"))
     fade = bool(modes.get("fade_model"))
-    keep_locked = {L.LOCKED_LABELS[0], L.LOCKED_LABELS[1]}
+    keep_locked = {L.LOCKED_LABELS[0]}
     out = []
     for c in checks:
         label = c.get("label") or ""
@@ -143,10 +136,10 @@ def filter_checks_for_paper(checks: list[dict], *, modes: dict, strategy_kind: s
             ok = True
         if fade and label == DIVERGENCE_LABEL:
             ok = True
-        if fade and label in EDGE_GATE_LABELS or (fade and label == LATE_EDGE_LABEL):
+        if fade and label in EDGE_GATE_LABELS:
             ok = True
         if fade and strategy_kind == "gates":
-            if locked and label not in keep_locked and label not in (DIVERGENCE_LABEL, LATE_EDGE_LABEL):
+            if locked and label not in keep_locked and label not in (DIVERGENCE_LABEL,):
                 ok = c.get("ok")
             elif not locked and label not in FADE_STRATEGY_KEEP:
                 ok = True

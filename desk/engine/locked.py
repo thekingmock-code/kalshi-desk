@@ -25,7 +25,5 @@ SUB25_BLACKOUT = 120.0
 
 LOCKED_LABELS = [
     "Entry window (720s–120s left)",
-    "Composite feeds (CB+KR <2s)",
     "Model vs mid divergence",
-    "Late-window edge (+2¢ under 300s)",
 ]

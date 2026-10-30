@@ -40,9 +40,8 @@ def test_fade_not_triggered_without_divergence():
 def test_ignore_edge_bypasses_net_edge_check():
     modes = load_paper_modes({"gates_15m_paper": {"ignore_edge_gate": True}})
     checks = [
-        {"label": "Net edge", "ok": False},
-        {"label": "Late-window edge (+2¢ under 300s)", "ok": False, "locked": True},
-        {"label": "Ask band", "ok": True},
+        {"label": "Edge", "ok": False, "locked": True},
+        {"label": "Ask band", "ok": True, "status": "pass", "counts": True},
     ]
     assert paper_gates_pass(checks, modes=modes, strategy_kind="gates")
 

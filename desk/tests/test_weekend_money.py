@@ -88,4 +88,4 @@ def test_weekend_bump_adds_to_g4_required():
     assert total == base + 2.0
     checks = weekend_checks(_ctx(is_weekend=True, prob=0.50, p_up=0.50, yes_mid=0.47, params={**_ctx().params, "weekend_bump_cents": 2.0}))
     g4 = [c for c in checks if c["label"] == "G4 Prob edge"][0]
-    assert "weekend 2.0¢" in g4["detail"]
+    assert "weekend 2.0c" in g4["detail"]

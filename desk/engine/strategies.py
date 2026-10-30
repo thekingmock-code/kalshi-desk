@@ -1,6 +1,7 @@
 """Per-side gate checks — delegates to gates_eval."""
 from __future__ import annotations
 
+from desk.engine.chop_log import chop_log_gate
 from desk.engine.gates_eval import GateContext, all_pass, evaluate_side, gate_edge_value, net_edge, net_edge_entry
 from desk.engine.tunable import merge_params
 
@@ -44,9 +45,19 @@ def gate_sides(
     index_price: float | None = None,
     coinbase_age: float | None = None,
     kraken_age: float | None = None,
-    feed_freshness_enabled: bool = False,
-    feed_max_age_secs: float = 2.0,
     momentum_gate_enabled: bool = True,
+    chop_addon_cents: float = 0.0,
+    weekend_bump_cents: float = 0.0,
+    taker_rate: float = 0.07,
+    g3_settlement_enabled: bool = True,
+    g4_cost_adjusted_enabled: bool = True,
+    g4_cost_pad_cents: float = 0.5,
+    paper_enabled: bool = False,
+    chop_log_show_row: bool = True,
+    chop_log_threshold: float = 30.0,
+    chop_log_basis: str = "original",
+    chop_score_original: float | None = None,
+    chop_score_adjusted: float | None = None,
 ) -> dict[str, list[dict]]:
     del already_entered_hour
     p = params or merge_params(strategy.get("id", "gates_15m"), asset, strategy.get("params"))
@@ -94,17 +105,32 @@ def gate_sides(
             index_price=index_price,
             coinbase_age=coinbase_age,
             kraken_age=kraken_age,
-            feed_freshness_enabled=feed_freshness_enabled,
-            feed_max_age_secs=feed_max_age_secs,
             momentum_gate_enabled=momentum_gate_enabled,
+            chop_addon_cents=0.0,
+            weekend_bump_cents=weekend_bump_cents,
+            taker_rate=taker_rate,
+            g3_settlement_enabled=g3_settlement_enabled,
+            g4_cost_adjusted_enabled=g4_cost_adjusted_enabled,
+            g4_cost_pad_cents=g4_cost_pad_cents,
         )
-        return evaluate_side(
+        checks = evaluate_side(
             strategy=strategy,
             ctx_base=ctx,
             fee_fn=fee_fn,
             ignore_edge_gates=ignore_edge_gates,
             skip_divergence=skip_divergence,
         )
+        if paper_enabled and chop_log_show_row:
+            checks = [
+                *checks,
+                chop_log_gate(
+                    original=chop_score_original,
+                    adjusted=chop_score_adjusted,
+                    threshold=chop_log_threshold,
+                    basis=chop_log_basis,
+                ),
+            ]
+        return checks
 
     return {
         "UP": one("UP", yes_bid, yes_ask, p_up, buy_pct, momentum),

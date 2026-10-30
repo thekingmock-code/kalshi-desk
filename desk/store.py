@@ -162,6 +162,16 @@ class Store:
                 fee REAL,
                 shadow_id INTEGER
             )""",
+            "ALTER TABLE chop_candidates ADD COLUMN gate_snapshot TEXT",
+            "ALTER TABLE chop_candidates ADD COLUMN cost_adjusted_edge REAL",
+            "ALTER TABLE chop_candidates ADD COLUMN cheap_side_model_edge INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE chop_candidates ADD COLUMN g2_passed INTEGER",
+            "ALTER TABLE chop_candidates ADD COLUMN g3_passed INTEGER",
+            "ALTER TABLE chop_candidates ADD COLUMN chop_log_score REAL",
+            "ALTER TABLE chop_candidates ADD COLUMN chop_log_threshold REAL",
+            "ALTER TABLE chop_candidates ADD COLUMN chop_log_basis TEXT",
+            "ALTER TABLE chop_candidates ADD COLUMN chop_log_would_block INTEGER",
+            "ALTER TABLE chop_candidates ADD COLUMN chop_log_secs_left_bucket TEXT",
             """CREATE TABLE IF NOT EXISTS chop_shadow_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL,
@@ -339,8 +349,11 @@ class Store:
             INSERT INTO chop_candidates (
               ts, asset, ticker, strategy, side, chop, chop_partial, missing_rows,
               gate_layer_result, chop_addon_cents, block_reason, would_have_entered,
-              taken, entry_ask, fee, shadow_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              taken, entry_ask, fee, shadow_id, gate_snapshot, cost_adjusted_edge,
+              cheap_side_model_edge, g2_passed, g3_passed,
+              chop_log_score, chop_log_threshold, chop_log_basis, chop_log_would_block,
+              chop_log_secs_left_bucket
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("ts", time.time()),
@@ -359,6 +372,16 @@ class Store:
                 row.get("entry_ask"),
                 row.get("fee"),
                 row.get("shadow_id"),
+                row.get("gate_snapshot"),
+                row.get("cost_adjusted_edge"),
+                1 if row.get("cheap_side_model_edge") else 0,
+                None if row.get("g2_passed") is None else int(bool(row["g2_passed"])),
+                None if row.get("g3_passed") is None else int(bool(row["g3_passed"])),
+                row.get("chop_log_score"),
+                row.get("chop_log_threshold"),
+                row.get("chop_log_basis"),
+                None if row.get("chop_log_would_block") is None else int(bool(row["chop_log_would_block"])),
+                row.get("chop_log_secs_left_bucket"),
             ),
         )
         self.conn.commit()
