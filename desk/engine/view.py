@@ -84,6 +84,7 @@ def build_asset(
     settings: dict | None = None,
     feed_ages: dict | None = None,
     measurements: dict | None = None,
+    spot_obi: dict | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -327,6 +328,7 @@ def build_asset(
         "tunable_params": params,
         "tunable_sliders": slider_defs(strat.get("id", "gates_15m"), asset) + shared_slider_defs(asset),
         "measurements": measurements or {},
+        "spot_obi": spot_obi or {},
         "gauge": build_gauge(
             composite=composite,
             strike=strike,

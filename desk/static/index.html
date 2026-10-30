@@ -767,6 +767,8 @@ function renderTrade(view, state) {
     pos.appendChild(line("Fees in", trade.fees_paid == null ? "—" : "$" + Number(trade.fees_paid).toFixed(2)));
     pos.appendChild(line("High bid", cents(trade.high_water)));
     pos.appendChild(line("Chop @ entry", trade.chop_at_entry == null ? "—" : Number(trade.chop_at_entry).toFixed(0)));
+    const obiVal = view.spot_obi?.obi_comb_top3;
+    pos.appendChild(line("Spot OBI top3", obiVal == null ? "—" : Number(obiVal).toFixed(3)));
     if (trade.paper) {
       pos.appendChild(line("Paper fills", (trade.paper_entries_used ?? 0) + "/" + (trade.paper_entries_max ?? 1) + " this market"));
     }
@@ -782,6 +784,8 @@ function renderTrade(view, state) {
     if (view.paper_entry?.enabled) {
       pos.appendChild(line("Paper slots", (trade.paper_entries_used ?? 0) + "/" + (trade.paper_entries_max ?? 1) + " used this market"));
     }
+    const obiFlat = view.spot_obi?.obi_comb_top3;
+    pos.appendChild(line("Spot OBI top3", obiFlat == null ? "—" : Number(obiFlat).toFixed(3)));
   }
   box.appendChild(pos);
 
@@ -1656,6 +1660,50 @@ function renderFeatures(state) {
       p.textContent = r.bucket + " · " + r.strategy + " · " + r.period + " · n=" + r.count + " · WR " + rate(r.win_rate) + " · implied " + (r.implied_ask == null ? "—" : cents(r.implied_ask)) + " · " + signedMoney(r.net_pnl);
       box.appendChild(p);
     }
+  }
+  const obiBuckets = an.obi_buckets || [];
+  if (obiBuckets.length) {
+    const h = document.createElement("h3");
+    h.textContent = "Spot OBI (comb top3) buckets";
+    box.appendChild(h);
+    const tbl = document.createElement("table");
+    tbl.className = "data-table";
+    tbl.innerHTML = "<thead><tr><th>Strategy</th><th>Asset</th><th>Bucket</th><th>n</th><th>WR</th><th>Net P&L</th></tr></thead>";
+    const tb = document.createElement("tbody");
+    for (const r of obiBuckets) {
+      const tr = document.createElement("tr");
+      if ((r.count || 0) < 30) tr.className = "muted";
+      tr.innerHTML = "<td>" + (r.strategy || "—") + "</td><td>" + (r.asset || "—") + "</td><td>" + r.bucket + "</td><td>" + (r.count || 0) + "</td><td>" + rate(r.win_rate) + "</td><td>" + signedMoney(r.net_pnl) + "</td>";
+      tb.appendChild(tr);
+    }
+    tbl.appendChild(tb);
+    box.appendChild(tbl);
+  }
+  function agreeTable(title, rows) {
+    if (!rows.length) return;
+    const h = document.createElement("h3");
+    h.textContent = title;
+    box.appendChild(h);
+    const tbl = document.createElement("table");
+    tbl.className = "data-table";
+    tbl.innerHTML = "<thead><tr><th>Strategy</th><th>Asset</th><th>Agrees</th><th>n</th><th>WR</th><th>Net P&L</th></tr></thead>";
+    const tb = document.createElement("tbody");
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      if ((r.count || 0) < 30) tr.className = "muted";
+      tr.innerHTML = "<td>" + (r.strategy || "—") + "</td><td>" + (r.asset || "—") + "</td><td>" + r.agrees + "</td><td>" + (r.count || 0) + "</td><td>" + rate(r.win_rate) + "</td><td>" + signedMoney(r.net_pnl) + "</td>";
+      tb.appendChild(tr);
+    }
+    tbl.appendChild(tbl);
+    box.appendChild(tbl);
+  }
+  agreeTable("OBI agrees side (taken)", an.obi_agrees || []);
+  agreeTable("OBI agrees side (taken, persistent only)", an.obi_agrees_persistent || []);
+  for (const line of an.obi_summary || []) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = line;
+    box.appendChild(p);
   }
   const ft = an.feature_terciles || {};
   for (const [feat, byStrat] of Object.entries(ft)) {

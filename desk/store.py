@@ -172,6 +172,14 @@ class Store:
             "ALTER TABLE chop_candidates ADD COLUMN chop_log_basis TEXT",
             "ALTER TABLE chop_candidates ADD COLUMN chop_log_would_block INTEGER",
             "ALTER TABLE chop_candidates ADD COLUMN chop_log_secs_left_bucket TEXT",
+            "ALTER TABLE chop_candidates ADD COLUMN obi_json TEXT",
+            """CREATE TABLE IF NOT EXISTS spot_obi_ticks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT,
+                payload TEXT NOT NULL
+            )""",
             """CREATE TABLE IF NOT EXISTS chop_shadow_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL,
@@ -252,6 +260,7 @@ class Store:
         self.conn.execute("DELETE FROM paper_open")
         self.conn.execute("DELETE FROM shadow_paper")
         self.conn.execute("DELETE FROM chop_candidates")
+        self.conn.execute("DELETE FROM spot_obi_ticks")
         self.conn.execute("DELETE FROM chop_shadow_trades")
         self.conn.commit()
 
@@ -352,8 +361,8 @@ class Store:
               taken, entry_ask, fee, shadow_id, gate_snapshot, cost_adjusted_edge,
               cheap_side_model_edge, g2_passed, g3_passed,
               chop_log_score, chop_log_threshold, chop_log_basis, chop_log_would_block,
-              chop_log_secs_left_bucket
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              chop_log_secs_left_bucket, obi_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 row.get("ts", time.time()),
@@ -382,17 +391,50 @@ class Store:
                 row.get("chop_log_basis"),
                 None if row.get("chop_log_would_block") is None else int(bool(row["chop_log_would_block"])),
                 row.get("chop_log_secs_left_bucket"),
+                json.dumps(row.get("obi_json")) if row.get("obi_json") is not None else None,
             ),
         )
         self.conn.commit()
         return int(cur.lastrowid)
+
+    def add_spot_obi_tick(self, *, ts: float, asset: str, ticker: str | None, payload: dict) -> None:
+        self.conn.execute(
+            "INSERT INTO spot_obi_ticks (ts, asset, ticker, payload) VALUES (?, ?, ?, ?)",
+            (ts, asset, ticker, json.dumps(payload)),
+        )
+        self.conn.commit()
+
+    def spot_obi_ticks(self, limit: int = 120) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM spot_obi_ticks ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d["payload"])
+            except (TypeError, json.JSONDecodeError):
+                pass
+            out.append(d)
+        return out
 
     def chop_candidates(self, limit: int = 2000) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM chop_candidates ORDER BY ts DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            raw = d.get("obi_json")
+            if raw:
+                try:
+                    d["obi_json"] = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+            out.append(d)
+        return out
 
     def add_chop_shadow(self, row: dict) -> int:
         cur = self.conn.execute(

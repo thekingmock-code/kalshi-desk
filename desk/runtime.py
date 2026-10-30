@@ -53,11 +53,13 @@ from desk.engine.weekend_money import (
 )
 from desk.engine.chop_log import candidate_log_fields
 from desk.engine.chop_log_analytics import chop_log_analytics
+from desk.engine.obi_analytics import obi_analytics
+from desk.engine.spot_obi import ObiPersistence, VenueBook, build_obi_snapshot
 from desk.engine.chop_gates import CHOP_GATES_KEY, load_chop_gates, reset_chop_soft_defaults
 from desk.engine.gate_utils import all_active_pass, checks_excluding_labels, find_gate, gate_snapshot_json
 from desk.engine.gates_eval import GateContext
 from desk.engine.weekend_money import cost_adjusted_edge_cents
-from desk.engine.paper import ask_for_side, can_paper_enter, paper_buy, side_to_yes
+from desk.engine.paper import ask_for_side, can_paper_enter, favored_side, paper_buy, side_to_yes
 from desk.engine.shadow import (
     calibration,
     gates_passed_labels,
@@ -108,6 +110,12 @@ class AssetRT:
     meas_window: WindowFeatureState = field(default_factory=WindowFeatureState)
     meas_book: BookMetricsState = field(default_factory=BookMetricsState)
     meas_liq: LiquidationState = field(default_factory=LiquidationState)
+    spot_coinbase: VenueBook = field(default_factory=VenueBook)
+    spot_kraken: VenueBook = field(default_factory=VenueBook)
+    obi_persist: ObiPersistence = field(default_factory=ObiPersistence)
+    last_obi: dict = field(default_factory=dict)
+    last_obi_log_ts: float = 0.0
+    blocked_candidate_at: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.book.asset = self.name
@@ -156,8 +164,14 @@ class Desk:
         products = {name: st.meta["coinbase"] for name, st in self.assets.items()}
         symbols = {name: st.meta["kraken"] for name, st in self.assets.items()}
         self._tasks = [
-            asyncio.create_task(coinbase.stream(products, self._on_coinbase, self._on_trade, self._stop), name="coinbase"),
-            asyncio.create_task(kraken.stream(symbols, self._on_kraken, self._on_trade, self._stop), name="kraken"),
+            asyncio.create_task(
+                coinbase.stream(products, self._on_coinbase, self._on_trade, self._stop, self._on_coinbase_book),
+                name="coinbase",
+            ),
+            asyncio.create_task(
+                kraken.stream(symbols, self._on_kraken, self._on_trade, self._stop, self._on_kraken_book),
+                name="kraken",
+            ),
             asyncio.create_task(self._poll_markets(), name="markets"),
             asyncio.create_task(self._tick(), name="tick"),
         ]
@@ -188,6 +202,55 @@ class Desk:
         st = self.assets.get(asset)
         if st and usd > 0:
             st.trades.append((ts, usd, is_buy))
+
+    def _on_coinbase_book(
+        self, asset: str, bids: list[tuple[float, float]], asks: list[tuple[float, float]], snapshot: bool, ts: float
+    ) -> None:
+        st = self.assets.get(asset)
+        if not st:
+            return
+        if snapshot:
+            st.spot_coinbase.apply_snapshot(bids, asks, ts)
+        else:
+            st.spot_coinbase.apply_delta(bids, asks, ts)
+
+    def _on_kraken_book(
+        self, asset: str, bids: list[tuple[float, float]], asks: list[tuple[float, float]], snapshot: bool, ts: float
+    ) -> None:
+        st = self.assets.get(asset)
+        if not st:
+            return
+        if snapshot:
+            st.spot_kraken.apply_snapshot(bids, asks, ts)
+        else:
+            st.spot_kraken.apply_delta(bids, asks, ts)
+
+    def _spot_obi(self, st: AssetRT, now: float, *, entry_side: str | None = None) -> dict:
+        cb_mid = st.coinbase[0] if st.coinbase else None
+        kr_mid = st.kraken[0] if st.kraken else None
+        snap = build_obi_snapshot(
+            coinbase_book=st.spot_coinbase,
+            kraken_book=st.spot_kraken,
+            coinbase_mid=cb_mid,
+            kraken_mid=kr_mid,
+            persistence=st.obi_persist,
+            ts=now,
+            entry_side=entry_side,
+        )
+        st.last_obi = snap
+        return snap
+
+    def _maybe_spot_obi_tick(self, st: AssetRT, now: float) -> None:
+        if not (self.cfg.get("paper") or {}).get("enabled"):
+            return
+        if now - st.last_obi_log_ts < 30:
+            return
+        st.last_obi_log_ts = now
+        obi = self._spot_obi(st, now)
+        ticker = st.book.ticker or (st.market or {}).get("ticker")
+        chop = (st.last_meas or {}).get("chop") or {}
+        payload = {**obi, "chop_score": chop.get("score"), "chop_score_adjusted": chop.get("score_adjusted")}
+        self.store.add_spot_obi_tick(ts=now, asset=st.name, ticker=ticker, payload=payload)
 
     async def _poll_markets(self) -> None:
         while not self._stop.is_set():
@@ -380,9 +443,15 @@ class Desk:
             "weekend_prefs": load_weekend_prefs(saved) if paper_on else {"timezone": "America/New_York"},
             "paper_analytics": paper_trade_analytics(self.store.paper_trades()) if paper_on else None,
             "measurement_prefs": load_measurement_prefs(saved) if paper_on else load_measurement_prefs({}),
-            "measurement_analytics": measurement_analytics(self.store.paper_trades())
-            if paper_on
-            else None,
+            "measurement_analytics": (
+                {
+                    **measurement_analytics(self.store.paper_trades()),
+                    **obi_analytics(self.store.chop_candidates(), self.store.paper_trades()),
+                }
+                if paper_on
+                else None
+            ),
+            "spot_obi_ticks": stamp_rows(self.store.spot_obi_ticks(40)) if paper_on else [],
             "measurement_ticks": stamp_rows(self.store.measurement_ticks(60)) if paper_on else [],
             "paper_trade_log": stamp_rows(self.store.paper_trades(40)) if paper_on else [],
             "chop_gates": load_chop_gates(saved) if paper_on else load_chop_gates({}),
@@ -441,6 +510,8 @@ class Desk:
             self._run_paper(st, now)
             self._maybe_scan(st, now)
             self._maybe_shadow(st, now)
+            self._spot_obi(st, now)
+            self._maybe_spot_obi_tick(st, now)
             self._measurement_tick(st, now, px)
 
     def _measurement_tick(self, st: AssetRT, now: float, composite: float | None) -> None:
@@ -553,7 +624,9 @@ class Desk:
             has_live_position=has_live,
         )
         if not ok:
+            self._maybe_log_blocked_candidate(st, view, now, reason=detail)
             return
+        obi = self._spot_obi(st, now, entry_side=detail)
         if pos and pos.paper and pos.ticker == ticker and side_to_yes(detail) != pos.side:
             return
         settings = self.store.settings()
@@ -641,6 +714,7 @@ class Desk:
                 "g2_passed": None if g2 is None else g2.get("status") == "pass" or g2.get("ok"),
                 "g3_passed": None if g3 is None else g3.get("status") == "pass" or g3.get("ok"),
                 **log_fields,
+                "obi_json": obi,
             }
         )
         st.last_paper_entry = now
@@ -665,7 +739,7 @@ class Desk:
             hour_et=hour_et,
             session=session,
         )
-        entry_log["meas_json"] = meas_snap
+        entry_log["meas_json"] = {**meas_snap, "obi": obi}
         paper_buy(
             st=st,
             view=view,
@@ -695,6 +769,56 @@ class Desk:
         )
         self.store.clear_paper_open(st.name)
         st.book.position = None
+
+    def _maybe_log_blocked_candidate(self, st: AssetRT, view: dict, now: float, *, reason: str) -> None:
+        if reason not in ("gates fail", "edge floor", "edge not positive", "fade not triggered"):
+            return
+        bot = view.get("bot") or {}
+        side, _edge = favored_side(bot)
+        if not side:
+            return
+        ticker = view.get("market", {}).get("ticker") or ""
+        key = (ticker, side, reason)
+        if now - st.blocked_candidate_at.get(key, 0) < 30:
+            return
+        st.blocked_candidate_at[key] = now
+        obi = self._spot_obi(st, now, entry_side=side)
+        chop_meta = view.get("chop") or {}
+        settings = self.store.settings()
+        chop_prefs = load_chop_gates(settings)
+        trade = view.get("trade") or {}
+        log_fields = candidate_log_fields(
+            original=chop_meta.get("score"),
+            adjusted=chop_meta.get("score_adjusted"),
+            threshold=float(chop_prefs.get("log_threshold", 30)),
+            basis=str(chop_prefs.get("log_basis", "original")),
+            secs_left=trade.get("secs_left"),
+        )
+        mkt = view.get("market") or {}
+        ask = ask_for_side(mkt, side)
+        self.store.add_chop_candidate(
+            {
+                "ts": now,
+                "asset": st.name,
+                "ticker": ticker,
+                "strategy": self._strategy(st.name).get("id"),
+                "side": side_to_yes(side),
+                "chop": chop_meta.get("score"),
+                "chop_partial": chop_meta.get("chop_partial"),
+                "missing_rows": chop_meta.get("missing_rows"),
+                "gate_layer_result": "log_only",
+                "chop_addon_cents": 0.0,
+                "block_reason": reason,
+                "would_have_entered": True,
+                "taken": False,
+                "entry_ask": ask,
+                "fee": None,
+                "shadow_id": None,
+                "gate_snapshot": gate_snapshot_json((view.get("gates") or {}).get(side) or []),
+                **log_fields,
+                "obi_json": obi,
+            }
+        )
 
     def _maybe_scan(self, st: AssetRT, now: float) -> None:
         strategy = self._strategy(st.name)
@@ -762,6 +886,7 @@ class Desk:
             signal_hold_secs=signal_hold,
             feed_ages=metrics.get("feed_ages"),
             measurements=st.last_meas,
+            spot_obi=st.last_obi,
         )
 
     def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
