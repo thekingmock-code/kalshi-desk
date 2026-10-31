@@ -53,6 +53,7 @@ from desk.engine.weekend_money import (
 )
 from desk.engine.chop_log import candidate_log_fields
 from desk.engine.chop_log_analytics import chop_log_analytics
+from desk.engine.arbitrage_chart import build_arbitrage_chart_payload
 from desk.engine.obi_analytics import obi_analytics
 from desk.engine.spot_obi import ObiPersistence, VenueBook, build_obi_snapshot
 from desk.engine.chop_gates import CHOP_GATES_KEY, load_chop_gates, reset_chop_soft_defaults
@@ -374,6 +375,7 @@ class Desk:
     def _payload(self, now: float) -> dict:
         btc_mom = self._momentum(self.assets.get("BTC"), now, self._composite(self.assets.get("BTC"), now)[0] if self.assets.get("BTC") else None) if self.assets.get("BTC") else None
         assets = {}
+        arbitrage_charts: dict = {}
         for name, st in self.assets.items():
             built = self._build_view(st, now, btc_momentum=btc_mom)
             metrics = self._metrics(st, now)
@@ -382,6 +384,11 @@ class Desk:
                 built["tab"]["secs_left"] is not None and built["tab"]["secs_left"] < 0
             )
             assets[name] = built
+            arbitrage_charts[name] = build_arbitrage_chart_payload(
+                asset=name,
+                chart_points=list(st.chart_points),
+                strike=st.book.strike,
+            )
         rows = self.store.journal()
         shadow = self.store.shadow_all()
         paper_on = bool((self.cfg.get("paper") or {}).get("enabled"))
@@ -462,6 +469,7 @@ class Desk:
             if paper_on
             else None,
             "balances": self._balances_header(assets, rows),
+            "arbitrage_charts": arbitrage_charts,
         }
 
     def _sample(self, now: float) -> None:

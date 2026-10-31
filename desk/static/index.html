@@ -234,6 +234,21 @@
   th { color: var(--muted); font-weight: 600; }
   .actions { display: flex; gap: 8px; margin-top: 8px; }
   .foot { color: var(--muted); font-size: 11px; margin: 12px 4px; }
+  .arb-chart-block {
+    margin: 12px 0 16px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+  }
+  .arb-chart-block h3 { margin: 0 0 6px; font-size: 13px; }
+  #arbitrageChartHost {
+    width: 100%;
+    height: min(420px, 55vh);
+    min-height: 240px;
+    border-radius: 6px;
+    overflow: hidden;
+  }
   .live { width: 8px; height: 8px; border-radius: 99px; background: var(--muted); display: inline-block; }
   .live.on { background: var(--green); }
   .gauge-bar {
@@ -334,6 +349,11 @@
     <section id="features" hidden>
       <h2>FEATURES · reports</h2>
       <p class="muted">Log-only measurements. No gate or entry changes.</p>
+      <div id="arbitrageChartBlock" class="arb-chart-block">
+        <h3>Arbitrage execution workspace</h3>
+        <p class="muted" id="arbitrageChartNote">Composite vs strike and required TWAP spot.</p>
+        <div id="arbitrageChartHost"></div>
+      </div>
       <div id="featureReports"></div>
     </section>
     <p class="foot" id="foot">Observe only — no Kalshi orders. Shadow paper scores log when gates pass; settlement uses composite vs strike (approx). Composite lead, BNB, and chop weights are unverified.</p>
@@ -1640,13 +1660,105 @@ function renderMeasurementUI(state) {
   }
 }
 
+const LW_CHARTS_URL = "https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js";
+let arbChartApi = null;
+let arbChartSeries = null;
+let arbChartStrike = null;
+let arbChartRequired = null;
+let arbChartKey = "";
+
+function ensureLightweightCharts() {
+  if (window.LightweightCharts) return Promise.resolve();
+  if (window.__lwChartsLoading) return window.__lwChartsLoading;
+  window.__lwChartsLoading = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = LW_CHARTS_URL;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("Lightweight Charts failed to load"));
+    document.head.appendChild(s);
+  });
+  return window.__lwChartsLoading;
+}
+
+function renderArbitrageFeatureChart(state) {
+  const host = document.getElementById("arbitrageChartHost");
+  const note = document.getElementById("arbitrageChartNote");
+  if (!host || window.__deskPage !== "features") return;
+  const payload = (state.arbitrage_charts || {})[asset];
+  if (!payload || !payload.ok) {
+    if (note) note.textContent = "Chart data unavailable for " + asset + ".";
+    return;
+  }
+  const rows = payload.rows || [];
+  const src = payload.source === "live" ? "Live composite ticks" : "Demo series";
+  let noteText = src + " · " + asset;
+  if (payload.strike != null) noteText += " · strike " + Number(payload.strike).toFixed(2);
+  if (payload.note) noteText += " · " + payload.note;
+  if (note) note.textContent = noteText;
+  const key = asset + "|" + rows.length + "|" + (rows.length ? rows[rows.length - 1].time : 0) + "|" + src;
+  ensureLightweightCharts().then(() => {
+    if (!host.isConnected) return;
+    if (arbChartKey !== key || !arbChartApi) {
+      host.replaceChildren();
+      arbChartApi = LightweightCharts.createChart(host, {
+        width: host.clientWidth,
+        height: host.clientHeight || 420,
+        layout: { background: { type: "solid", color: "#10151c" }, textColor: "#e7e1d1" },
+        grid: { vertLines: { color: "rgba(44, 38, 24, 0.6)" }, horzLines: { color: "rgba(44, 38, 24, 0.6)" } },
+        rightPriceScale: { borderColor: "rgba(154, 145, 124, 0.5)" },
+        timeScale: { borderColor: "rgba(154, 145, 124, 0.5)", timeVisible: true, secondsVisible: true },
+      });
+      arbChartSeries = arbChartApi.addCandlestickSeries({
+        upColor: "#3ddc97", downColor: "#ff5d73", borderVisible: false,
+        wickUpColor: "#3ddc97", wickDownColor: "#ff5d73",
+      });
+      arbChartStrike = arbChartApi.addLineSeries({
+        color: "#e8c547", lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, title: "Strike",
+      });
+      arbChartRequired = arbChartApi.addLineSeries({
+        color: "#7db7ff", lineWidth: 2, title: "Required TWAP",
+      });
+      arbChartKey = key;
+      if (!window.__arbChartResize) {
+        window.__arbChartResize = true;
+        window.addEventListener("resize", () => {
+          if (arbChartApi && host) arbChartApi.applyOptions({ width: host.clientWidth });
+        });
+      }
+    }
+    const candles = rows.map((d) => ({
+      time: d.time, open: d.open, high: d.high, low: d.low, close: d.close,
+    }));
+    arbChartSeries.setData(candles);
+    arbChartStrike.setData(rows.map((d) => ({ time: d.time, value: d.strike })));
+    arbChartRequired.setData(rows.map((d) => ({ time: d.time, value: d.required_spot })));
+    const markers = [];
+    rows.forEach((d) => {
+      if (d.signal === "buy") {
+        markers.push({ time: d.time, position: "belowBar", color: "#3ddc97", shape: "arrowUp", text: "BUY" });
+      } else if (d.signal === "sell") {
+        markers.push({ time: d.time, position: "aboveBar", color: "#ff5d73", shape: "arrowDown", text: "SELL" });
+      }
+    });
+    arbChartSeries.setMarkers(markers);
+    arbChartApi.timeScale().fitContent();
+  }).catch(() => {
+    if (note) note.textContent = "Could not load chart library (network required).";
+  });
+}
+
 function renderFeatures(state) {
+  renderArbitrageFeatureChart(state);
   const box = document.getElementById("featureReports");
   if (!box) return;
   box.replaceChildren();
   const an = state.measurement_analytics;
   if (!an) {
-    box.textContent = "Paper off — no feature reports.";
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "Paper off — measurement reports below chart are hidden.";
+    box.appendChild(p);
     return;
   }
   const pb = an.price_buckets?.rows || [];

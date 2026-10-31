@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 
-import numpy as np
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-# Create a local web folder if it doesn't exist
+from desk.engine.arbitrage_chart import mock_arbitrage_series
+
 os.makedirs("generated", exist_ok=True)
 
 LIGHTWEIGHT_CHARTS_CDN = (
@@ -15,72 +19,7 @@ LIGHTWEIGHT_CHARTS_CDN = (
 
 
 def generate_mock_arbitrage_data():
-    """
-    Generates historical data simulating a 60-second settlement run
-    to demonstrate the composite index, strike line, and signals.
-    """
-    np.random.seed(42)
-    timesteps = 120  # 120 seconds of data
-    base_time = 1793782400  # Example unix timestamp
-
-    strike_price = 65000.0
-
-    coinbase = 65010 + np.cumsum(np.random.normal(0.2, 3, timesteps))
-    kraken = coinbase + np.random.normal(0, 1.5, timesteps)
-    bitstamp = coinbase + np.random.normal(0, 2, timesteps)
-
-    composite_spot = (coinbase + kraken + bitstamp) / 3
-
-    data_list = []
-    price_window_60s: list[float] = []
-
-    for t in range(timesteps):
-        current_time = base_time + t
-        current_spot = float(composite_spot[t])
-        price_window_60s.append(current_spot)
-
-        if len(price_window_60s) > 60:
-            price_window_60s.pop(0)
-
-        ticks_passed = len(price_window_60s)
-        ticks_remaining = max(1, 60 - ticks_passed)
-        sum_passed = sum(price_window_60s)
-
-        target_total_sum = strike_price * 60
-        required_spot_avg = (target_total_sum - sum_passed) / ticks_remaining
-
-        if t > 5:
-            recent_prices = composite_spot[max(0, t - 15) : t + 1]
-            returns = np.diff(recent_prices) / recent_prices[:-1]
-            current_vol = float(np.std(returns)) if len(returns) > 0 else 0.0001
-        else:
-            current_vol = 0.0002
-
-        time_left = ticks_remaining
-        denom = current_vol * current_spot * np.sqrt(time_left)
-        sigma_distance = abs(current_spot - required_spot_avg) / denom if denom > 0 else 0.0
-
-        signal = "none"
-        if 0.5 <= sigma_distance <= 1.5:
-            if t > 2 and composite_spot[t] > composite_spot[t - 2] and current_spot < strike_price:
-                signal = "buy"
-            elif t > 2 and composite_spot[t] < composite_spot[t - 2] and current_spot > strike_price:
-                signal = "sell"
-
-        data_list.append(
-            {
-                "time": current_time,
-                "open": float(current_spot - np.random.uniform(1, 3)),
-                "high": float(current_spot + np.random.uniform(2, 5)),
-                "low": float(current_spot - np.random.uniform(2, 5)),
-                "close": current_spot,
-                "strike": float(strike_price),
-                "required_spot": float(required_spot_avg if t < 60 else strike_price),
-                "signal": signal,
-            }
-        )
-
-    return data_list
+    return mock_arbitrage_series(timesteps=120)["rows"]
 
 
 def build_chart_html(data_json: str) -> None:
