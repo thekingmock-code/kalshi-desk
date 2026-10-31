@@ -118,18 +118,17 @@ def build_arbitrage_chart_payload(
     asset: str,
     chart_points: list[dict],
     strike: float | None,
-    min_live_points: int = 15,
 ) -> dict[str, Any]:
+    """Features tab chart: live composite ticks only (no demo fallback)."""
     live = series_from_composite_points(chart_points, strike=strike)
-    if live.get("ok") and len(live.get("rows") or []) >= min_live_points:
-        live["asset"] = asset
+    live["asset"] = asset
+    live["live_points"] = len(chart_points)
+    if live.get("ok"):
         return live
-    demo = mock_arbitrage_series(strike_price=strike if strike and strike > 0 else 65000.0)
-    demo["asset"] = asset
-    demo["live_points"] = len(chart_points)
-    demo["note"] = (
-        f"Showing demo series — only {len(chart_points)} live composite tick(s) for this window."
-        if chart_points
-        else "Showing demo series — waiting for live composite ticks."
-    )
-    return demo
+    if strike is None:
+        live["note"] = "Waiting for market strike on this 15m window."
+    elif not chart_points:
+        live["note"] = "Waiting for live composite ticks (feeds + open market)."
+    else:
+        live["note"] = "Live chart unavailable for this window."
+    return live

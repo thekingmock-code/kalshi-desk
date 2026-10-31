@@ -16,8 +16,16 @@ def test_live_series_from_points():
     assert out["rows"][-1]["close"] == 65000.0 + 19 * 0.5
 
 
-def test_payload_prefers_live_when_enough_points():
-    pts = [{"t": 1000 + i, "c": 65000.0 + i} for i in range(20)]
-    p = build_arbitrage_chart_payload(asset="BTC", chart_points=pts, strike=65000.0, min_live_points=15)
+def test_payload_live_only_even_with_few_points():
+    pts = [{"t": 1000, "c": 65000.0}]
+    p = build_arbitrage_chart_payload(asset="BTC", chart_points=pts, strike=65000.0)
     assert p["source"] == "live"
-    assert p["asset"] == "BTC"
+    assert p["ok"]
+    assert len(p["rows"]) == 1
+
+
+def test_payload_no_demo_when_empty():
+    p = build_arbitrage_chart_payload(asset="BTC", chart_points=[], strike=65000.0)
+    assert not p["ok"]
+    assert p["rows"] == []
+    assert "Waiting" in (p.get("note") or "")

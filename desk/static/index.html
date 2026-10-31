@@ -1686,15 +1686,26 @@ function renderArbitrageFeatureChart(state) {
   const note = document.getElementById("arbitrageChartNote");
   if (!host || window.__deskPage !== "features") return;
   const payload = (state.arbitrage_charts || {})[asset];
-  if (!payload || !payload.ok) {
-    if (note) note.textContent = "Chart data unavailable for " + asset + ".";
+  if (!payload || !payload.ok || !(payload.rows || []).length) {
+    if (arbChartApi) {
+      arbChartApi.remove();
+      arbChartApi = arbChartSeries = arbChartStrike = arbChartRequired = null;
+      arbChartKey = "";
+    }
+    host.replaceChildren();
+    const wait = document.createElement("p");
+    wait.className = "muted";
+    wait.style.margin = "0";
+    wait.style.padding = "24px 8px";
+    wait.style.textAlign = "center";
+    wait.textContent = (payload && payload.note) || ("Waiting for live composite ticks on " + asset + ".");
+    host.appendChild(wait);
+    if (note) note.textContent = "Live composite only · " + asset + (payload && payload.live_points != null ? " · " + payload.live_points + " tick(s)" : "");
     return;
   }
   const rows = payload.rows || [];
-  const src = payload.source === "live" ? "Live composite ticks" : "Demo series";
-  let noteText = src + " · " + asset;
+  let noteText = "Live composite · " + asset + " · " + rows.length + " tick(s)";
   if (payload.strike != null) noteText += " · strike " + Number(payload.strike).toFixed(2);
-  if (payload.note) noteText += " · " + payload.note;
   if (note) note.textContent = noteText;
   const key = asset + "|" + rows.length + "|" + (rows.length ? rows[rows.length - 1].time : 0) + "|" + src;
   ensureLightweightCharts().then(() => {
