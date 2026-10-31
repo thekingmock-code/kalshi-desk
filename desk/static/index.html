@@ -504,7 +504,9 @@ function render(state) {
   renderFeatures(state);
   const page = window.__deskPage || "desk";
   document.getElementById("main").hidden = page !== "desk";
-  document.getElementById("features").hidden = page !== "features";
+  const feat = document.getElementById("features");
+  feat.hidden = page !== "features";
+  if (page === "features") feat.scrollIntoView({ block: "start", behavior: "smooth" });
   document.getElementById("pageTabs").querySelectorAll(".tab").forEach((b) => {
     b.classList.toggle("on", b.dataset.page === page);
   });
@@ -1685,7 +1687,19 @@ function renderArbitrageFeatureChart(state) {
   const host = document.getElementById("arbitrageChartHost");
   const note = document.getElementById("arbitrageChartNote");
   if (!host || window.__deskPage !== "features") return;
-  const payload = (state.arbitrage_charts || {})[asset];
+  if (!state.arbitrage_charts) {
+    host.replaceChildren();
+    const old = document.createElement("p");
+    old.className = "muted";
+    old.style.margin = "0";
+    old.style.padding = "24px 8px";
+    old.style.textAlign = "center";
+    old.textContent = "Dashboard build is old — run git pull and restart kalshi-desk on the VPS.";
+    host.appendChild(old);
+    if (note) note.textContent = "Arbitrage chart requires a recent deploy.";
+    return;
+  }
+  const payload = state.arbitrage_charts[asset];
   if (!payload || !payload.ok || !(payload.rows || []).length) {
     if (arbChartApi) {
       arbChartApi.remove();
@@ -1707,7 +1721,7 @@ function renderArbitrageFeatureChart(state) {
   let noteText = "Live composite · " + asset + " · " + rows.length + " tick(s)";
   if (payload.strike != null) noteText += " · strike " + Number(payload.strike).toFixed(2);
   if (note) note.textContent = noteText;
-  const key = asset + "|" + rows.length + "|" + (rows.length ? rows[rows.length - 1].time : 0) + "|" + src;
+  const key = asset + "|" + rows.length + "|" + (rows.length ? rows[rows.length - 1].time : 0);
   ensureLightweightCharts().then(() => {
     if (!host.isConnected) return;
     if (arbChartKey !== key || !arbChartApi) {
