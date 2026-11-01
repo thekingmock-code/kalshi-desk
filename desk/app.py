@@ -64,6 +64,20 @@ async def index():
     )
 
 
+@app.get("/static/{file_path:path}")
+async def static_asset(file_path: str):
+    target = (STATIC / file_path).resolve()
+    if not str(target).startswith(str(STATIC.resolve())):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404)
+    if not target.is_file():
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=404)
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/api/health")
 async def health():
     paper = desk.cfg.get("paper") or {}
@@ -72,7 +86,7 @@ async def health():
         "authed": desk.authed,
         "observe_only": not bool(paper.get("enabled")),
         "paper": paper,
-        "ui_build": "desk-main-arb-chart",
+        "ui_build": "desk-main-arb-chart-v2",
         "has_arbitrage_charts": True,
     }
 

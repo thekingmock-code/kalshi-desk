@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>XVANTAGE // 15m</title>
+<script src="/static/lightweight-charts.standalone.js" defer></script>
 <style>
   :root {
     color-scheme: dark;
@@ -1669,24 +1670,30 @@ function renderMeasurementUI(state) {
   }
 }
 
-const LW_CHARTS_URL = "https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js";
+const LW_CHARTS_LOCAL = "/static/lightweight-charts.standalone.js";
+const LW_CHARTS_CDN = "https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js";
 let arbChartApi = null;
 let arbChartSeries = null;
 let arbChartStrike = null;
 let arbChartRequired = null;
 let arbChartKey = "";
+let arbChartAsset = "";
+
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = url;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("load failed: " + url));
+    document.head.appendChild(s);
+  });
+}
 
 function ensureLightweightCharts() {
   if (window.LightweightCharts) return Promise.resolve();
   if (window.__lwChartsLoading) return window.__lwChartsLoading;
-  window.__lwChartsLoading = new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = LW_CHARTS_URL;
-    s.async = true;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error("Lightweight Charts failed to load"));
-    document.head.appendChild(s);
-  });
+  window.__lwChartsLoading = loadScript(LW_CHARTS_LOCAL).catch(() => loadScript(LW_CHARTS_CDN));
   return window.__lwChartsLoading;
 }
 
@@ -1728,6 +1735,12 @@ function renderArbitrageChart(state) {
   let noteText = "Live composite · " + asset + " · " + rows.length + " tick(s)";
   if (payload.strike != null) noteText += " · strike " + Number(payload.strike).toFixed(2);
   if (note) note.textContent = noteText;
+  if (arbChartAsset !== asset && arbChartApi) {
+    arbChartApi.remove();
+    arbChartApi = arbChartSeries = arbChartStrike = arbChartRequired = null;
+    arbChartKey = "";
+  }
+  arbChartAsset = asset;
   const key = asset + "|" + rows.length + "|" + (rows.length ? rows[rows.length - 1].time : 0);
   ensureLightweightCharts().then(() => {
     if (!host.isConnected) return;
@@ -1764,21 +1777,36 @@ function renderArbitrageChart(state) {
     const candles = rows.map((d) => ({
       time: d.time, open: d.open, high: d.high, low: d.low, close: d.close,
     }));
-    arbChartSeries.setData(candles);
-    arbChartStrike.setData(rows.map((d) => ({ time: d.time, value: d.strike })));
-    arbChartRequired.setData(rows.map((d) => ({ time: d.time, value: d.required_spot })));
-    const markers = [];
-    rows.forEach((d) => {
-      if (d.signal === "buy") {
-        markers.push({ time: d.time, position: "belowBar", color: "#3ddc97", shape: "arrowUp", text: "BUY" });
-      } else if (d.signal === "sell") {
-        markers.push({ time: d.time, position: "aboveBar", color: "#ff5d73", shape: "arrowDown", text: "SELL" });
-      }
-    });
-    arbChartSeries.setMarkers(markers);
-    arbChartApi.timeScale().fitContent();
-  }).catch(() => {
-    if (note) note.textContent = "Could not load chart library (network required).";
+    try {
+      arbChartSeries.setData(candles);
+      arbChartStrike.setData(rows.map((d) => ({ time: d.time, value: d.strike })));
+      arbChartRequired.setData(rows.map((d) => ({ time: d.time, value: d.required_spot })));
+      const markers = [];
+      rows.forEach((d) => {
+        if (d.signal === "buy") {
+          markers.push({ time: d.time, position: "belowBar", color: "#3ddc97", shape: "arrowUp", text: "BUY" });
+        } else if (d.signal === "sell") {
+          markers.push({ time: d.time, position: "aboveBar", color: "#ff5d73", shape: "arrowDown", text: "SELL" });
+        }
+      });
+      arbChartSeries.setMarkers(markers);
+      arbChartApi.timeScale().fitContent();
+    } catch (chartErr) {
+      host.replaceChildren();
+      const err = document.createElement("p");
+      err.className = "muted";
+      err.style.padding = "16px";
+      err.textContent = "Chart error: " + (chartErr && chartErr.message ? chartErr.message : String(chartErr));
+      host.appendChild(err);
+    }
+  }).catch((err) => {
+    if (note) note.textContent = "Chart library failed to load — run git pull on VPS (needs /static/lightweight-charts.standalone.js).";
+    host.replaceChildren();
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.style.padding = "16px";
+    p.textContent = (err && err.message) || "Chart library load failed.";
+    host.appendChild(p);
   });
 }
 

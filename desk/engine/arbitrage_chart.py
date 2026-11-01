@@ -21,13 +21,31 @@ def series_from_composite_points(
     settlement_secs: int = 60,
 ) -> dict[str, Any]:
     """Build candle + overlay series from desk chart_points ({t, c, s, ...})."""
-    if not points or strike is None:
+    if not points:
         return {"ok": False, "source": "live", "rows": []}
+    if strike is None:
+        for pt in reversed(points):
+            s = pt.get("s")
+            if s is not None and float(s) > 0:
+                strike = float(s)
+                break
+    if strike is None:
+        return {"ok": False, "source": "live", "rows": []}
+
     rows: list[dict] = []
     window: list[float] = []
     prev_c: float | None = None
+    t0 = float(points[0].get("t") or 0)
+    last_t = -1
     for pt in points:
-        t = int(pt["t"]) if pt.get("t") is not None else len(rows)
+        raw_t = pt.get("t")
+        if raw_t is not None:
+            t = int(round(float(raw_t) - t0))
+        else:
+            t = len(rows)
+        if t <= last_t:
+            t = last_t + 1
+        last_t = t
         c = float(pt["c"])
         window.append(c)
         if len(window) > settlement_secs:

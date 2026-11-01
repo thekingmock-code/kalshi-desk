@@ -9,15 +9,30 @@ def test_mock_series_has_rows():
 
 
 def test_live_series_from_points():
-    pts = [{"t": 1000 + i, "c": 65000.0 + i * 0.5} for i in range(20)]
+    pts = [{"t": 1000 + i, "c": 65000.0 + i * 0.5, "s": 65000.0} for i in range(20)]
     out = series_from_composite_points(pts, strike=65000.0)
     assert out["ok"]
     assert len(out["rows"]) == 20
     assert out["rows"][-1]["close"] == 65000.0 + 19 * 0.5
 
 
+def test_live_series_dedupes_same_second_timestamps():
+    pts = [{"t": 1000.1, "c": 65000.0, "s": 65000.0}, {"t": 1000.8, "c": 65001.0, "s": 65000.0}]
+    out = series_from_composite_points(pts, strike=65000.0)
+    times = [r["time"] for r in out["rows"]]
+    assert times == sorted(times)
+    assert len(times) == len(set(times))
+
+
+def test_strike_from_point_when_book_strike_missing():
+    pts = [{"t": 1000, "c": 65000.0, "s": 65100.0}]
+    out = series_from_composite_points(pts, strike=None)
+    assert out["ok"]
+    assert out["rows"][0]["strike"] == 65100.0
+
+
 def test_payload_live_only_even_with_few_points():
-    pts = [{"t": 1000, "c": 65000.0}]
+    pts = [{"t": 1000, "c": 65000.0, "s": 65000.0}]
     p = build_arbitrage_chart_payload(asset="BTC", chart_points=pts, strike=65000.0)
     assert p["source"] == "live"
     assert p["ok"]

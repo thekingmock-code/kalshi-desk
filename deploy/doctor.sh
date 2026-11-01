@@ -17,7 +17,12 @@ echo "Local desk /        → HTTP ${desk_code} (want 200)"
 echo "Local desk /api/state → HTTP ${api_code} (want 200)"
 ui_build=$(echo "$health_json" | grep -o '"ui_build"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 || true)
 if [[ -n "$ui_build" ]]; then
-  echo "UI build marker    → ${ui_build} (want desk-main-arb-chart)"
+  echo "UI build marker    → ${ui_build} (want desk-main-arb-chart-v2)"
+  if [[ -f "${APP_DIR}/desk/static/lightweight-charts.standalone.js" ]]; then
+    echo "Chart library file → present ($(wc -c < "${APP_DIR}/desk/static/lightweight-charts.standalone.js") bytes)"
+  else
+    echo "Chart library file → MISSING (git pull)"
+  fi
 else
   echo "UI build marker    → missing (git pull + restart kalshi-desk)"
 fi
