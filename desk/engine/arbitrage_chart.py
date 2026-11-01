@@ -119,7 +119,7 @@ def build_arbitrage_chart_payload(
     chart_points: list[dict],
     strike: float | None,
 ) -> dict[str, Any]:
-    """Features tab chart: live composite ticks only (no demo fallback)."""
+    """Main dashboard chart: live composite ticks only (no demo fallback)."""
     live = series_from_composite_points(chart_points, strike=strike)
     live["asset"] = asset
     live["live_points"] = len(chart_points)

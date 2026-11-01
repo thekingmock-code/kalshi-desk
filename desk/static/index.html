@@ -289,13 +289,18 @@
   <nav id="tabs" class="tabs"></nav>
   <nav id="pageTabs" class="tabs" style="margin-top:4px">
     <button type="button" class="tab on" data-page="desk">Desk</button>
-    <button type="button" class="tab" data-page="features">Features · chart</button>
+    <button type="button" class="tab" data-page="features">Features</button>
   </nav>
   <main id="main">
     <div id="deskPanels">
     <section id="trade"><h2>CURRENT TRADE</h2><p class="muted">Connecting…</p></section>
     <section id="gauge"><h2>DISTANCE TO STRIKE</h2><p class="muted">no data</p></section>
     <section id="minichart"><h2>COMPOSITE VS STRIKE</h2><svg id="chartSvg" class="mini-chart" viewBox="0 0 320 128" preserveAspectRatio="none"></svg><div id="chartLabels" class="chart-labels"></div></section>
+    <div id="arbitrageChartBlock" class="arb-chart-block">
+      <h2>ARBITRAGE · LIVE COMPOSITE</h2>
+      <p class="muted" id="arbitrageChartNote">Composite vs strike and required TWAP spot.</p>
+      <div id="arbitrageChartHost"></div>
+    </div>
     <section id="suggestion"><h2>SUGGESTION</h2><p class="suggest wait">WAIT</p></section>
     <section id="chop"><h2>CHOP VS REAL</h2></section>
     <section id="strategy">
@@ -351,11 +356,6 @@
     <section id="features" hidden>
       <h2>FEATURES · reports</h2>
       <p class="muted">Log-only measurements. No gate or entry changes.</p>
-      <div id="arbitrageChartBlock" class="arb-chart-block">
-        <h3>Arbitrage execution workspace</h3>
-        <p class="muted" id="arbitrageChartNote">Composite vs strike and required TWAP spot.</p>
-        <div id="arbitrageChartHost"></div>
-      </div>
       <div id="featureReports"></div>
     </section>
     <p class="foot" id="foot">Observe only — no Kalshi orders. Shadow paper scores log when gates pass; settlement uses composite vs strike (approx). Composite lead, BNB, and chop weights are unverified.</p>
@@ -499,6 +499,7 @@ function render(state) {
   renderTrade(view, state);
   renderGauge(view);
   renderMiniChart(view);
+  renderArbitrageChart(state);
   renderSuggestion(view);
   renderChop(view, state);
   renderStrategy(state, view);
@@ -1689,10 +1690,10 @@ function ensureLightweightCharts() {
   return window.__lwChartsLoading;
 }
 
-function renderArbitrageFeatureChart(state) {
+function renderArbitrageChart(state) {
   const host = document.getElementById("arbitrageChartHost");
   const note = document.getElementById("arbitrageChartNote");
-  if (!host || window.__deskPage !== "features") return;
+  if (!host || (window.__deskPage || "desk") !== "desk") return;
   if (!state.arbitrage_charts) {
     host.replaceChildren();
     const old = document.createElement("p");
@@ -1782,7 +1783,6 @@ function renderArbitrageFeatureChart(state) {
 }
 
 function renderFeatures(state) {
-  renderArbitrageFeatureChart(state);
   const box = document.getElementById("featureReports");
   if (!box) return;
   box.replaceChildren();

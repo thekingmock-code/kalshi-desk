@@ -72,7 +72,7 @@ async def health():
         "authed": desk.authed,
         "observe_only": not bool(paper.get("enabled")),
         "paper": paper,
-        "ui_build": "deskPanels-features-chart",
+        "ui_build": "desk-main-arb-chart",
         "has_arbitrage_charts": True,
     }
 
