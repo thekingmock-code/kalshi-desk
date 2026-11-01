@@ -289,9 +289,10 @@
   <nav id="tabs" class="tabs"></nav>
   <nav id="pageTabs" class="tabs" style="margin-top:4px">
     <button type="button" class="tab on" data-page="desk">Desk</button>
-    <button type="button" class="tab" data-page="features">Features</button>
+    <button type="button" class="tab" data-page="features">Features · chart</button>
   </nav>
   <main id="main">
+    <div id="deskPanels">
     <section id="trade"><h2>CURRENT TRADE</h2><p class="muted">Connecting…</p></section>
     <section id="gauge"><h2>DISTANCE TO STRIKE</h2><p class="muted">no data</p></section>
     <section id="minichart"><h2>COMPOSITE VS STRIKE</h2><svg id="chartSvg" class="mini-chart" viewBox="0 0 320 128" preserveAspectRatio="none"></svg><div id="chartLabels" class="chart-labels"></div></section>
@@ -346,6 +347,7 @@
         </table>
       </div>
     </section>
+    </div>
     <section id="features" hidden>
       <h2>FEATURES · reports</h2>
       <p class="muted">Log-only measurements. No gate or entry changes.</p>
@@ -503,10 +505,13 @@ function render(state) {
   renderMeasurementUI(state);
   renderFeatures(state);
   const page = window.__deskPage || "desk";
-  document.getElementById("main").hidden = page !== "desk";
+  const deskPanels = document.getElementById("deskPanels");
   const feat = document.getElementById("features");
-  feat.hidden = page !== "features";
-  if (page === "features") feat.scrollIntoView({ block: "start", behavior: "smooth" });
+  if (deskPanels) deskPanels.hidden = page !== "desk";
+  if (feat) {
+    feat.hidden = page !== "features";
+    if (page === "features") feat.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
   document.getElementById("pageTabs").querySelectorAll(".tab").forEach((b) => {
     b.classList.toggle("on", b.dataset.page === page);
   });
