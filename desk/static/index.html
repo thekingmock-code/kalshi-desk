@@ -364,6 +364,7 @@
 <script>
 const assetOrder = ["BTC", "BNB", "SOL"];
 let asset = localStorage.getItem("desk-asset") || "BTC";
+window.__deskPage = localStorage.getItem("desk-page") || "desk";
 let last = null;
 let sliderSig = "";
 let arm = 0;
@@ -1731,9 +1732,11 @@ function renderArbitrageFeatureChart(state) {
     if (!host.isConnected) return;
     if (arbChartKey !== key || !arbChartApi) {
       host.replaceChildren();
+      const w = Math.max(host.clientWidth || 0, 280);
+      const h = Math.max(host.clientHeight || 0, 240);
       arbChartApi = LightweightCharts.createChart(host, {
-        width: host.clientWidth,
-        height: host.clientHeight || 420,
+        width: w,
+        height: h,
         layout: { background: { type: "solid", color: "#10151c" }, textColor: "#e7e1d1" },
         grid: { vertLines: { color: "rgba(44, 38, 24, 0.6)" }, horzLines: { color: "rgba(44, 38, 24, 0.6)" } },
         rightPriceScale: { borderColor: "rgba(154, 145, 124, 0.5)" },
@@ -1836,7 +1839,7 @@ function renderFeatures(state) {
       tr.innerHTML = "<td>" + (r.strategy || "—") + "</td><td>" + (r.asset || "—") + "</td><td>" + r.agrees + "</td><td>" + (r.count || 0) + "</td><td>" + rate(r.win_rate) + "</td><td>" + signedMoney(r.net_pnl) + "</td>";
       tb.appendChild(tr);
     }
-    tbl.appendChild(tbl);
+    tbl.appendChild(tb);
     box.appendChild(tbl);
   }
   agreeTable("OBI agrees side (taken)", an.obi_agrees || []);
@@ -1870,6 +1873,7 @@ document.getElementById("pageTabs")?.addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-page]");
   if (!btn) return;
   window.__deskPage = btn.dataset.page;
+  try { localStorage.setItem("desk-page", window.__deskPage); } catch (err) { /* ignore */ }
   if (last) render(last);
 });
 

@@ -12,8 +12,19 @@ echo ""
 
 desk_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:43123/ 2>/dev/null || echo "000")
 api_code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:43123/api/state 2>/dev/null || echo "000")
+health_json=$(curl -s http://127.0.0.1:43123/api/health 2>/dev/null || echo "{}")
 echo "Local desk /        → HTTP ${desk_code} (want 200)"
 echo "Local desk /api/state → HTTP ${api_code} (want 200)"
+ui_build=$(echo "$health_json" | grep -o '"ui_build"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 || true)
+if [[ -n "$ui_build" ]]; then
+  echo "UI build marker    → ${ui_build} (want deskPanels-features-chart)"
+else
+  echo "UI build marker    → missing (git pull + restart kalshi-desk)"
+fi
+if [[ -f "${APP_DIR}/desk/static/index.html" ]]; then
+  panels=$(grep -c 'id="deskPanels"' "${APP_DIR}/desk/static/index.html" 2>/dev/null || echo 0)
+  echo "Features tab fix   → deskPanels count ${panels} (want 1)"
+fi
 echo ""
 
 for u in kalshi-desk cloudflared; do
