@@ -82,16 +82,32 @@ paper:
   require_lag_side: false
 
 suggest:
-  exits_enabled: false
-  exit_loss_frac: 0.42
+  exits_enabled: true
+  entry_grace_enabled: true
+  entry_grace_secs: 75
+  bank_mode: ACTIVE
+  bank_bid_cents: 95
+  bank_min_secs_left: 45
   bank_price: 0.95
   bank_secs_left: 45
-  entry_grace_secs: 75
+  wrong_side_exit_mode: ACTIVE
+  wrong_side_recover_pct: 0.35
+  wrong_side_confirm_secs: 3
+  recover_prob: 0.35
+  hard_stop_mode: SHADOW
+  exit_loss_frac: 0.42
+  reverse_mode: SHADOW
   reverse_prob: 0.80
   reverse_secs_left: 60
   reverse_price_max: 0.90
-  recover_prob: 0.35
+  thin_profit_mode: SHADOW
   thin_prob: 0.55
+  trail_mode: SHADOW
+  breakeven_mode: SHADOW
+  arb_escape_mode: SHADOW
+  arb_cap_mode: SHADOW
+  arb_reversal_mode: SHADOW
+  hour_stop_mode: SHADOW
 
 # Strategy kinds + exit-only params. Entry tunables are per-asset (tunable.py).
 strategies:

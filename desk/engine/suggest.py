@@ -1,7 +1,9 @@
-"""Suggestion priority. First match wins."""
+"""Suggestion priority. In-trade exits via exit_rules (per-rule ACTIVE/SHADOW)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from desk.engine.exit_rules import evaluate_exits
 
 
 @dataclass
@@ -26,6 +28,10 @@ class SuggestCtx:
     paper_maxed: bool = False
     paper_entries_used: int = 0
     paper_entries_max: int = 2
+    wrong_side_confirm_since: float | None = None
+    eval_now: float = 0.0
+    entry_fee: float = 0.0
+    contracts: float = 1.0
 
 
 def decide(ctx: SuggestCtx, rules: dict, strategy: dict | None = None) -> tuple[str, list[str]]:
@@ -50,79 +56,23 @@ def decide(ctx: SuggestCtx, rules: dict, strategy: dict | None = None) -> tuple[
             reasons.append("observe only · no order")
         return "WAIT", reasons
 
-    if not rules.get("exits_enabled", True):
-        return "HOLD", ["Exits off · hold to 15m settlement"]
+    def _fee(bid: float) -> float:
+        from desk.engine.model import fee_dollars
 
-    loss_at = float(rules["exit_loss_frac"])
-    if ctx.loss_frac >= loss_at:
-        return "EXIT NOW", [f"loss {ctx.loss_frac * 100:.0f}% of cost"]
+        rate = float(rules.get("_taker_rate", 0.07))
+        return fee_dollars(ctx.contracts, bid, rate)
 
-    bank_px = float(rules["bank_price"])
-    bank_secs = float(rules["bank_secs_left"])
-    if (
-        ctx.held_bid is not None
-        and ctx.secs_left is not None
-        and ctx.held_bid >= bank_px
-        and ctx.secs_left > bank_secs
-    ):
-        return "EXIT NOW", [f"held bid {ctx.held_bid * 100:.0f}¢ with {ctx.secs_left:.0f}s left"]
-
-    grace = float(rules["entry_grace_secs"])
-    if ctx.held_for is not None and ctx.held_for < grace:
-        return "HOLD", [f"entry grace {ctx.held_for:.0f}s of {grace:.0f}s"]
-
-    if (
-        ctx.wrong
-        and ctx.other_prob is not None
-        and ctx.secs_left is not None
-        and ctx.other_ask is not None
-        and ctx.other_prob >= float(rules["reverse_prob"])
-        and ctx.secs_left >= float(rules["reverse_secs_left"])
-        and ctx.other_ask <= float(rules["reverse_price_max"])
-    ):
-        return "REVERSE", [
-            f"wrong side · other side {ctx.other_prob * 100:.0f}% at {ctx.other_ask * 100:.0f}¢"
-        ]
-
-    if ctx.wrong and ctx.recover_p is not None and ctx.recover_p < float(rules["recover_prob"]):
-        return "EXIT NOW", [f"wrong side · recover chance {ctx.recover_p * 100:.0f}%"]
-
-    if (
-        ctx.wrong is False
-        and ctx.recover_p is not None
-        and ctx.pnl is not None
-        and ctx.recover_p < float(rules["thin_prob"])
-        and ctx.pnl > 0
-    ):
-        return "EXIT NOW", [f"right side but only {ctx.recover_p * 100:.0f}% · in profit"]
-
-    extra = _strategy_exit(ctx, strategy)
-    if extra:
-        return extra
-
-    return "HOLD", ["rules leave the position on"]
-
-
-def _strategy_exit(ctx: SuggestCtx, strategy: dict | None) -> tuple[str, list[str]] | None:
-    if not strategy:
-        return None
-    kind = strategy.get("kind")
-    p = strategy.get("params") or {}
-    bid = ctx.held_bid
-    if kind == "gates" and bid is not None and ctx.entry is not None and ctx.high_water is not None:
-        trail = float(p.get("trail_retrace", 0.09))
-        if ctx.high_water > ctx.entry and bid <= ctx.high_water * (1 - trail):
-            return "EXIT NOW", [f"trail gave back {trail * 100:.0f}%"]
-        be = float(p.get("breakeven_after", 0.09))
-        if ctx.high_water - ctx.entry >= be and bid <= ctx.entry:
-            return "EXIT NOW", [f"back to entry after +{be * 100:.0f}¢"]
-    if kind == "arb" and bid is not None:
-        if bid >= float(p.get("hard_cap", 0.85)):
-            return "EXIT NOW", [f"hard cap {float(p['hard_cap']) * 100:.0f}¢"]
-        if bid >= float(p.get("escape_price", 0.82)):
-            return "EXIT NOW", [f"escape at {float(p['escape_price']) * 100:.0f}¢"]
-        if ctx.wrong:
-            return "EXIT NOW", ["reversal guard"]
-    if kind == "hour" and bid is not None and bid <= float(p.get("stop_price", 0.40)):
-        return "EXIT NOW", [f"hour stop {float(p['stop_price']) * 100:.0f}¢"]
-    return None
+    ev = evaluate_exits(
+        ctx,
+        rules,
+        strategy,
+        now=ctx.eval_now or 0.0,
+        wrong_side_confirm_since=ctx.wrong_side_confirm_since,
+        contracts=ctx.contracts,
+        entry_fee=ctx.entry_fee,
+        exit_fee_fn=_fee,
+    )
+    reasons = list(ev.reasons)
+    if ev.next_hint:
+        reasons.append(f"Next: {ev.next_hint}")
+    return ev.action, reasons

@@ -1193,31 +1193,34 @@ function renderStrategy(state, view) {
   exits.replaceChildren();
   const rules = state.rules || {};
   const bits = [];
+  const status = view.exit_rules_status || [];
   if (rules.exits_enabled === false) {
-    bits.push("Exits disabled · paper holds to 15m settlement (0¢ or 100¢)");
-  } else {
-    bits.push("Hard stop " + Math.round((rules.exit_loss_frac || 0) * 100) + "% of cost");
-    bits.push("Bank at " + cents(rules.bank_price) + " with more than " + rules.bank_secs_left + "s left");
-    bits.push("Entry grace " + rules.entry_grace_secs + "s");
-    bits.push("Reverse if the other side is " + Math.round((rules.reverse_prob || 0) * 100) + "%+, at least " + rules.reverse_secs_left + "s left, price at or under " + cents(rules.reverse_price_max));
-    bits.push("Exit a wrong side under " + Math.round((rules.recover_prob || 0) * 100) + "% recover");
-    bits.push("Take profit on a right side under " + Math.round((rules.thin_prob || 0) * 100) + "%");
-    if (spec.kind === "gates" || spec.kind === "weekend_money") {
-      bits.push("Trail " + unit(spec.params.trail_retrace, "percent") + " off the high");
-      bits.push("Breakeven after +" + unit(spec.params.breakeven_after, "cents"));
+    bits.push("Master exits OFF · hold to 15m settlement (baseline)");
+  } else if (status.length) {
+    bits.push("Exit rules (ACTIVE = live, SHADOW = log only, OFF = disabled):");
+    for (const row of status) {
+      const label = row.label || row.id;
+      bits.push(label + ": " + (row.status || "?") + (row.note ? " · " + row.note : ""));
     }
+  }
+  const sug = view.suggestion || {};
+  if (sug.exit_next_hint && rules.exits_enabled !== false) {
+    bits.push("In trade · next active threshold: " + sug.exit_next_hint);
   }
   if (spec.kind === "weekend_money") {
     bits.push("Weekend stack (G1 off) · 3m warmup · 2m close-out · 2s signal hold");
     bits.push("38–55¢ ask band (per asset sliders)");
-  } else if (spec.kind === "arb" && rules.exits_enabled !== false) {
-    bits.push("Escape at " + unit(spec.params.escape_price, "cents") + " · hard cap " + unit(spec.params.hard_cap, "cents"));
-    bits.push("Reversal guard exits a wrong-side arb");
-  } else if (spec.kind === "hour") {
-    bits.push("Stop if the bid is " + unit(spec.params.stop_price, "cents") + " or lower");
-    bits.push("One entry per UTC hour");
   } else if (spec.log_only) {
     bits.push("Log only. No entry.");
+  }
+  const er = state.exit_rule_reports || {};
+  const erKeys = Object.keys(er);
+  if (erKeys.length) {
+    bits.push("Exit reports (vs hold baseline):");
+    for (const k of erKeys.slice(0, 6)) {
+      const r = er[k];
+      bits.push(k + " · n=" + r.times_fired + (r.insufficient_data ? " · insufficient (<100)" : "") + (r.avg_pnl_vs_hold != null ? " · avg vs hold " + signedMoney(r.avg_pnl_vs_hold) : ""));
+    }
   }
   for (const bit of bits) {
     const p = document.createElement("div");

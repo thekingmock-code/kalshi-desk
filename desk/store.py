@@ -173,6 +173,21 @@ class Store:
             "ALTER TABLE chop_candidates ADD COLUMN chop_log_would_block INTEGER",
             "ALTER TABLE chop_candidates ADD COLUMN chop_log_secs_left_bucket TEXT",
             "ALTER TABLE chop_candidates ADD COLUMN obi_json TEXT",
+            """CREATE TABLE IF NOT EXISTS paper_exit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                side TEXT NOT NULL,
+                entry_ts REAL,
+                entry_ask REAL,
+                exit_rule TEXT NOT NULL,
+                exit_ts REAL,
+                exit_px REAL,
+                actual_pnl REAL,
+                settlement_pnl REAL,
+                shadow_json TEXT
+            )""",
             """CREATE TABLE IF NOT EXISTS bot_decisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL,
@@ -682,6 +697,55 @@ class Store:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def add_paper_exit_log(self, row: dict) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO paper_exit_log
+            (ts, asset, ticker, side, entry_ts, entry_ask, exit_rule, exit_ts, exit_px, actual_pnl, settlement_pnl, shadow_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                float(row.get("ts") or time.time()),
+                row["asset"],
+                row["ticker"],
+                row["side"],
+                row.get("entry_ts"),
+                row.get("entry_ask"),
+                row["exit_rule"],
+                row.get("exit_ts"),
+                row.get("exit_px"),
+                row.get("actual_pnl"),
+                row.get("settlement_pnl"),
+                json.dumps(row.get("shadow_json") or []),
+            ),
+        )
+        self.conn.commit()
+
+    def paper_exit_log(self, limit: int = 500) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM paper_exit_log ORDER BY ts DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["shadow_json"] = json.loads(d.get("shadow_json") or "[]")
+            except json.JSONDecodeError:
+                d["shadow_json"] = []
+            out.append(d)
+        return out
+
+    def update_paper_exit_settlement(self, ticker: str, side: str, entry_ts: float, settlement_pnl: float) -> None:
+        self.conn.execute(
+            """
+            UPDATE paper_exit_log SET settlement_pnl = ?
+            WHERE ticker = ? AND side = ? AND entry_ts = ? AND settlement_pnl IS NULL
+            """,
+            (settlement_pnl, ticker, side, entry_ts,),
+        )
+        self.conn.commit()
 
     def add_bot_decision(self, payload: dict) -> None:
         self.conn.execute(

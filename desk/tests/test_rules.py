@@ -33,24 +33,38 @@ def test_exits_disabled_holds_to_settlement():
 
 
 def test_bank_95c_with_60s_left_exits():
-    rules = {**CFG["suggest"], "exits_enabled": True}
-    assert rules["bank_price"] == 0.95
-    assert rules["bank_secs_left"] == 45
+    rules = {**CFG["suggest"], "exits_enabled": True, "_taker_rate": 0.07}
     action, _ = decide(
-        SuggestCtx(in_trade=True, loss_frac=0.0, held_bid=0.95, secs_left=60, held_for=1),
+        SuggestCtx(
+            in_trade=True,
+            loss_frac=0.0,
+            held_bid=0.95,
+            secs_left=60,
+            held_for=200,
+            eval_now=1000.0,
+            contracts=1.0,
+            entry_fee=0.01,
+        ),
         rules,
     )
     assert action == "EXIT NOW"
 
 
-def test_loss_of_exactly_42_percent_exits():
+def test_loss_of_exactly_42_percent_shadow_by_default():
     rules = {**CFG["suggest"], "exits_enabled": True}
     assert rules["exit_loss_frac"] == 0.42
     action, _ = decide(
-        SuggestCtx(in_trade=True, loss_frac=0.42, held_bid=0.40, secs_left=200, held_for=1),
+        SuggestCtx(
+            in_trade=True,
+            loss_frac=0.42,
+            held_bid=0.40,
+            secs_left=200,
+            held_for=200,
+            eval_now=1000.0,
+        ),
         rules,
     )
-    assert action == "EXIT NOW"
+    assert action == "HOLD"
 
 
 def test_fee_rounding():

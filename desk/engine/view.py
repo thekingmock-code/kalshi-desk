@@ -17,6 +17,7 @@ from desk.engine.gates_eval import net_edge, net_edge_entry
 from desk.engine.strategies import all_pass, gate_sides
 from desk.engine.tunable import merge_params, shared_slider_defs, slider_defs
 from desk.engine.paper import paper_entry_status
+from desk.engine.exit_rules import evaluate_exits, rules_ui_status
 from desk.engine.suggest import SuggestCtx, decide
 
 ET = ZoneInfo("America/New_York")
@@ -87,6 +88,7 @@ def build_asset(
     composite_median: float | None = None,
     measurements: dict | None = None,
     spot_obi: dict | None = None,
+    wrong_side_confirm_since: float | None = None,
 ) -> dict:
     fees = cfg["fees"]
     rate = float(fees["taker_rate"])
@@ -238,9 +240,33 @@ def build_asset(
         cfg,
         composite=composite,
     )
-    ctx = _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now, cfg, paper_buys)
-    action, reasons = decide(ctx, cfg["suggest"], strategy)
+    ctx = _ctx(
+        trade,
+        position,
+        secs_left,
+        p_up,
+        market,
+        favored,
+        favored_edge,
+        favored_pass,
+        now,
+        cfg,
+        paper_buys,
+        wrong_side_confirm_since=wrong_side_confirm_since,
+    )
+    suggest_rules = {**cfg["suggest"], "_taker_rate": rate}
+    action, reasons = decide(ctx, suggest_rules, strat)
     tone = _tone(action, trade.get("pnl"))
+    exit_ev = evaluate_exits(
+        ctx,
+        suggest_rules,
+        strat,
+        now=now,
+        wrong_side_confirm_since=wrong_side_confirm_since,
+        contracts=ctx.contracts,
+        entry_fee=ctx.entry_fee,
+        exit_fee_fn=lambda b: fee_dollars(ctx.contracts, b, rate) if b is not None else 0.0,
+    )
     paper_entry = paper_entry_status(
         cfg=cfg,
         strategy=strat,
@@ -268,6 +294,15 @@ def build_asset(
         has_live_position=has_live_position,
         settings=settings,
     )
+    if not trade.get("flat") and trade.get("paper"):
+        if action == "EXIT NOW" and reasons:
+            paper_entry["reason"] = reasons[0]
+        elif not cfg["suggest"].get("exits_enabled", True):
+            paper_entry["reason"] = f"In paper {trade.get('direction') or 'position'} — hold to settlement"
+        elif exit_ev.next_hint:
+            paper_entry["reason"] = f"In paper {trade.get('direction') or 'position'} · {exit_ev.next_hint}"
+        else:
+            paper_entry["reason"] = f"In paper {trade.get('direction') or 'position'} · active exit rules armed"
     tab_pos = "FLAT"
     tab_pnl = None
     if position and market.get("ticker") and position.ticker == market.get("ticker"):
@@ -318,7 +353,14 @@ def build_asset(
         },
         "trade": trade,
         "paper_entry": paper_entry,
-        "suggestion": {"action": action, "tone": tone, "reasons": reasons},
+        "suggestion": {
+            "action": action,
+            "tone": tone,
+            "reasons": reasons,
+            "exit_active_rule": exit_ev.active_rule,
+            "exit_next_hint": exit_ev.next_hint,
+        },
+        "exit_rules_status": rules_ui_status(suggest_rules, strat),
         "chop": {
             "score": round(score, 1),
             "score_adjusted": None if score_adjusted is None else round(float(score_adjusted), 1),
@@ -430,7 +472,21 @@ def _trade(
     }
 
 
-def _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favored_pass, now, cfg, paper_buys) -> SuggestCtx:
+def _ctx(
+    trade,
+    position,
+    secs_left,
+    p_up,
+    market,
+    favored,
+    favored_edge,
+    favored_pass,
+    now,
+    cfg,
+    paper_buys,
+    *,
+    wrong_side_confirm_since: float | None = None,
+) -> SuggestCtx:
     paper_cfg = cfg.get("paper") or {}
     enabled = bool(paper_cfg.get("enabled"))
     max_e = int(paper_cfg.get("max_entries_per_market", 2))
@@ -471,6 +527,10 @@ def _ctx(trade, position, secs_left, p_up, market, favored, favored_edge, favore
         pnl=pnl,
         high_water=position.high_water if position else None,
         entry=position.entry if position else None,
+        wrong_side_confirm_since=wrong_side_confirm_since,
+        eval_now=now,
+        contracts=float(position.contracts) if position else 1.0,
+        entry_fee=float(position.fees) if position else 0.0,
     )
 
 

@@ -119,6 +119,7 @@ class AssetRT:
     last_obi: dict = field(default_factory=dict)
     last_obi_log_ts: float = 0.0
     blocked_candidate_at: dict = field(default_factory=dict)
+    wrong_side_confirm_since: float | None = None
 
     def __post_init__(self) -> None:
         self.book.asset = self.name
@@ -490,7 +491,14 @@ class Desk:
             "balances": self._balances_header(assets, rows),
             "arbitrage_charts": arbitrage_charts,
             "modular_bot": self._modular_bot_snapshot(),
+            "exit_rule_reports": self._exit_rule_reports(),
         }
+
+    def _exit_rule_reports(self) -> dict:
+        from desk.engine.exit_reports import exit_rule_report
+
+        rows = self.store.paper_exit_log(limit=500)
+        return exit_rule_report(rows)
 
     def _modular_bot_snapshot(self) -> dict:
         mcfg = self.cfg.get("modular_bot") or {}
@@ -742,10 +750,14 @@ class Desk:
         ticker = st.book.ticker or ""
         if not ticker:
             return
+        pos = st.book.position
+        rate = float(self.cfg["fees"]["taker_rate"])
+        if pos and pos.paper and pos.ticker == ticker:
+            self._evaluate_paper_exits(st, now, pos, strategy, rate)
+            return
         buys = self._paper_buys(st)
         view = self._preview(st, now, strategy, buys)
         pos = st.book.position
-        rate = float(self.cfg["fees"]["taker_rate"])
         paper_cfg = self.cfg.get("paper") or {}
         max_e = int(paper_cfg.get("max_entries_per_market", 2))
         cooldown = float(paper_cfg.get("entry_cooldown_secs", 30))
@@ -1025,7 +1037,82 @@ class Desk:
             composite_median=metrics.get("composite_median"),
             measurements=st.last_meas,
             spot_obi=st.last_obi,
+            wrong_side_confirm_since=st.wrong_side_confirm_since,
         )
+
+    def _evaluate_paper_exits(self, st: AssetRT, now: float, pos: Position, strategy: dict, rate: float) -> None:
+        from desk.engine.exit_rules import evaluate_exits
+        from desk.engine.view import _ctx
+
+        buys = self._paper_buys(st)
+        view = self._preview(st, now, strategy, buys)
+        trade = view.get("trade") or {}
+        market = view.get("market") or {}
+        bot = view.get("bot") or {}
+        p_up = bot.get("p_up")
+        secs_left = trade.get("secs_left")
+        suggest_rules = {**self.cfg["suggest"], "_taker_rate": rate}
+        favored = None
+        ctx = _ctx(
+            trade,
+            pos,
+            secs_left,
+            p_up,
+            market,
+            favored,
+            None,
+            False,
+            now,
+            self.cfg,
+            buys,
+            wrong_side_confirm_since=st.wrong_side_confirm_since,
+        )
+        ev = evaluate_exits(
+            ctx,
+            suggest_rules,
+            strategy,
+            now=now,
+            wrong_side_confirm_since=st.wrong_side_confirm_since,
+            contracts=ctx.contracts,
+            entry_fee=ctx.entry_fee,
+            exit_fee_fn=lambda b: fee_dollars(ctx.contracts, b, rate),
+        )
+        st.wrong_side_confirm_since = ev.wrong_side_confirm_since
+        if ev.action != "EXIT NOW" or not ev.active_rule:
+            return
+        bid = self._exit_bid(st, pos)
+        exit_fee = 0.0 if bid is None else fee_dollars(pos.contracts, bid, rate)
+        entry_fee = pos.fees
+        actual_pnl = None
+        if bid is not None and pos.entry is not None:
+            actual_pnl = (bid - pos.entry) * pos.contracts - entry_fee - exit_fee
+        shadow_payload = [
+            {
+                "rule": r.rule_id,
+                "mode": r.mode,
+                "would_have_fired": r.would_fire,
+                "net_pnl_if_exit": r.net_pnl_if_exit,
+                "detail": r.detail,
+            }
+            for r in ev.rule_evals
+        ]
+        self.store.add_paper_exit_log(
+            {
+                "ts": now,
+                "asset": st.name,
+                "ticker": pos.ticker,
+                "side": pos.side,
+                "entry_ts": pos.entry_ts,
+                "entry_ask": pos.entry,
+                "exit_rule": ev.active_rule,
+                "exit_ts": now,
+                "exit_px": bid,
+                "actual_pnl": actual_pnl,
+                "settlement_pnl": None,
+                "shadow_json": shadow_payload,
+            }
+        )
+        self._paper_close(st, pos, now, rate)
 
     def _preview(self, st: AssetRT, now: float, strategy: dict, paper_buys: int | None = None) -> dict:
         del strategy
