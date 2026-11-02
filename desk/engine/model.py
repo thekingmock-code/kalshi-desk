@@ -66,8 +66,21 @@ def composite_price(
     feeds: list[tuple[str, float, float]],
     now: float,
     stale_secs: float,
+    *,
+    composite_cfg: dict | None = None,
+    venue_states: dict | None = None,
 ) -> tuple[float | None, list[str]]:
-    """Average fresh last prices. Drop any print older than stale_secs."""
+    """Composite mid from venue feeds. Uses depth weights when composite_cfg + venue_states set."""
+    if composite_cfg is not None and venue_states is not None:
+        from desk.engine.composite_index import compute_composite
+
+        price, names, _diag = compute_composite(
+            venue_states,
+            now=now,
+            composite_cfg=composite_cfg,
+            legacy_stale_secs=stale_secs,
+        )
+        return price, names
     fresh = [(name, px) for name, px, ts in feeds if px and px > 0 and now - ts <= stale_secs]
     if not fresh:
         return None, []

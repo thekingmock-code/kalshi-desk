@@ -34,7 +34,9 @@ from desk.engine.measurements.window_features import WindowFeatureState
 from desk.engine.measurements.book_tracker import BookMetricsState
 from desk.engine.measurements.liquidation import LiquidationState
 from desk.engine.model import fair_up
+from desk.engine.composite_index import compute_composite, log_trade_deviations
 from desk.engine.model import composite_price, fee_dollars, log_return_stdev, move_1m_from_returns  # fee_dollars used for paper exits
+from desk.feeds.venues.registry import build_venue_states, start_venue_tasks
 from desk.engine.rollover import Book, Position, _auto_settle, rollover
 from desk.engine.balances import paper_summary, parse_kalshi_balance
 from desk.engine.edge_modes import (
@@ -149,6 +151,9 @@ class Desk:
         self._seeded = False
         self._lock = asyncio.Lock()
         self._account_balance: dict | None = None
+        asset_meta = {name: st.meta for name, st in self.assets.items()}
+        self.venue_states = build_venue_states(self.cfg, asset_meta)
+        self._last_composite_diag: dict[str, dict] = {}
 
     async def start(self) -> None:
         paper_on = bool((self.cfg.get("paper") or {}).get("enabled"))
@@ -162,20 +167,24 @@ class Desk:
                 self.auth_note = None
         elif self.auth_note:
             print(self.auth_note)
-        products = {name: st.meta["coinbase"] for name, st in self.assets.items()}
-        symbols = {name: st.meta["kraken"] for name, st in self.assets.items()}
-        self._tasks = [
-            asyncio.create_task(
-                coinbase.stream(products, self._on_coinbase, self._on_trade, self._stop, self._on_coinbase_book),
-                name="coinbase",
-            ),
-            asyncio.create_task(
-                kraken.stream(symbols, self._on_kraken, self._on_trade, self._stop, self._on_kraken_book),
-                name="kraken",
-            ),
-            asyncio.create_task(self._poll_markets(), name="markets"),
-            asyncio.create_task(self._tick(), name="tick"),
-        ]
+        asset_meta = {name: st.meta for name, st in self.assets.items()}
+        self._tasks = start_venue_tasks(
+            self._stop,
+            self.cfg,
+            asset_meta,
+            self.venue_states,
+            self._on_venue_trade,
+            on_book_extra={
+                "coinbase": self._on_coinbase_book,
+                "kraken": self._on_kraken_book,
+            },
+        )
+        self._tasks.extend(
+            [
+                asyncio.create_task(self._poll_markets(), name="markets"),
+                asyncio.create_task(self._tick(), name="tick"),
+            ]
+        )
         if self._creds:
             self._tasks.append(asyncio.create_task(self._poll_private(), name="kalshi-private"))
         prefs = load_measurement_prefs(self.store.settings())
@@ -189,20 +198,26 @@ class Desk:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
 
-    def _on_coinbase(self, asset: str, price: float, ts: float) -> None:
+    def _sync_legacy_venue_prices(self, asset: str, now: float) -> None:
         st = self.assets.get(asset)
-        if st:
-            st.coinbase = (price, ts)
+        if not st:
+            return
+        vs = self.venue_states.get(asset) or {}
+        cb = vs.get("coinbase")
+        if cb and cb.mid:
+            st.coinbase = (cb.mid, (cb.last_tick_ts_ms or now * 1000) / 1000.0)
+        kr = vs.get("kraken")
+        if kr and kr.mid:
+            st.kraken = (kr.mid, (kr.last_tick_ts_ms or now * 1000) / 1000.0)
 
-    def _on_kraken(self, asset: str, price: float, ts: float) -> None:
-        st = self.assets.get(asset)
-        if st:
-            st.kraken = (price, ts)
-
-    def _on_trade(self, asset: str, usd: float, is_buy: bool, ts: float) -> None:
+    def _on_venue_trade(self, venue: str, asset: str, usd: float, is_buy: bool, ts: float) -> None:
         st = self.assets.get(asset)
         if st and usd > 0:
             st.trades.append((ts, usd, is_buy))
+        self._sync_legacy_venue_prices(asset, ts)
+        price, _names, diag = self._composite_calc(asset, ts)
+        self._last_composite_diag[asset] = diag
+        log_trade_deviations(asset, price, diag, trigger_venue=venue)
 
     def _on_coinbase_book(
         self, asset: str, bids: list[tuple[float, float]], asks: list[tuple[float, float]], snapshot: bool, ts: float
@@ -1475,20 +1490,17 @@ class Desk:
     def _dual_feed(self, st: AssetRT, now: float) -> tuple[bool, str]:
         max_age = gate_locked.COMPOSITE_MAX_AGE
         parts = []
-        ok_cb = ok_kr = False
-        if st.coinbase:
-            age = now - st.coinbase[1]
-            ok_cb = age <= max_age
-            parts.append(f"CB {age:.1f}s")
-        else:
-            parts.append("CB missing")
-        if st.kraken:
-            age = now - st.kraken[1]
-            ok_kr = age <= max_age
-            parts.append(f"KR {age:.1f}s")
-        else:
-            parts.append("KR missing")
-        return ok_cb and ok_kr, " · ".join(parts)
+        fresh = 0
+        for vname, vstate in (self.venue_states.get(st.name) or {}).items():
+            if vstate.mid is None:
+                parts.append(f"{vname[:2].upper()} missing")
+                continue
+            age = now - (vstate.last_tick_ts_ms or 0) / 1000.0
+            ok = age <= max_age
+            if ok:
+                fresh += 1
+            parts.append(f"{vname[:2].upper()} {age:.1f}s")
+        return fresh >= 2, " · ".join(parts) if parts else "no venues"
 
     def _pct_move_3s(self, st: AssetRT, now: float, price: float | None) -> float | None:
         if price is None or not st.samples:
@@ -1526,15 +1538,35 @@ class Desk:
         market["series"] = st.meta["series"]
         return market
 
-    def _composite(self, st: AssetRT, now: float) -> tuple[float | None, list[str], float | None]:
+    def _composite_calc(self, asset: str, now: float) -> tuple[float | None, list[str], dict]:
         stale = float(self.cfg["feeds"]["stale_secs"])
-        feeds = []
-        if st.coinbase:
-            feeds.append(("coinbase", st.coinbase[0], st.coinbase[1]))
-        if st.kraken:
-            feeds.append(("kraken", st.kraken[0], st.kraken[1]))
-        price, names = composite_price(feeds, now, stale)
-        ages = [now - ts for name, _, ts in feeds if name in names]
+        comp_cfg = self.cfg.get("composite") or {}
+        states = self.venue_states.get(asset) or {}
+        price, names, diag = compute_composite(
+            states,
+            now=now,
+            composite_cfg=comp_cfg,
+            legacy_stale_secs=stale,
+        )
+        return price, names, diag
+
+    def _composite(self, st: AssetRT, now: float) -> tuple[float | None, list[str], float | None]:
+        self._sync_legacy_venue_prices(st.name, now)
+        stale = float(self.cfg["feeds"]["stale_secs"])
+        comp_cfg = self.cfg.get("composite") or {}
+        states = self.venue_states.get(st.name) or {}
+        price, names, diag = compute_composite(
+            states,
+            now=now,
+            composite_cfg=comp_cfg,
+            legacy_stale_secs=stale,
+        )
+        self._last_composite_diag[st.name] = diag
+        ages = []
+        for vname in names:
+            vstate = states.get(vname)
+            if vstate and vstate.last_tick_ts_ms:
+                ages.append(now - vstate.last_tick_ts_ms / 1000.0)
         return price, names, (max(ages) if ages else None)
 
     def _ref(self, st: AssetRT, now: float) -> float | None:

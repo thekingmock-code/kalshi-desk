@@ -5,6 +5,8 @@ assets:
     series: KXBTC15M
     coinbase: BTC-USD
     kraken: BTC/USD
+    bitstamp: btcusd
+    gemini: btcusd
     index: BRTI
   BNB:
     series: KXBNB15M
@@ -15,7 +17,22 @@ assets:
     series: KXSOL15M
     coinbase: SOL-USD
     kraken: SOL/USD
+    bitstamp: solusd
+    gemini: solusd
     index: SOLUSD_RTI
+
+composite:
+  enabled_venues: [coinbase, kraken, bitstamp, gemini]
+  drop_stale_venues: false
+  stale_ms: 5000
+  depth_window_secs: 60
+  assets:
+    BTC:
+      venues: [coinbase, kraken, bitstamp, gemini]
+    SOL:
+      venues: [coinbase, kraken, bitstamp, gemini]
+    BNB:
+      venues: [coinbase, kraken]
 
 feeds:
   index_poll_secs: 3
