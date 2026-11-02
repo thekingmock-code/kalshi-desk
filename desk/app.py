@@ -89,8 +89,9 @@ async def health():
         "authed": desk.authed,
         "observe_only": not bool(paper.get("enabled")),
         "paper": paper,
-        "ui_build": "desk-main-arb-chart-v3",
+        "ui_build": "desk-v4-modular-chart",
         "has_arbitrage_charts": True,
+        "has_modular_bot": bool((desk.cfg.get("modular_bot") or {}).get("enabled")),
         "telegram_configured": bool((__import__("os").environ.get("TELEGRAM_BOT_TOKEN") or "").strip()),
     }
 

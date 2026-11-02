@@ -450,6 +450,7 @@ class Desk:
         return {
             "now": now,
             "et": et_stamp(now),
+            "ui_build": "desk-v4-modular-chart",
             "authed": self.authed,
             "auth_note": self.auth_note,
             "observe_only": not bool((self.cfg.get("paper") or {}).get("enabled")),

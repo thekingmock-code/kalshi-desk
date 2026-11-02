@@ -248,7 +248,46 @@
     min-height: 240px;
     border-radius: 6px;
     overflow: hidden;
+    position: relative;
+    background: #0a0e14;
+    border: 1px dashed var(--line);
   }
+  .chart-overlay-msg {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 12px;
+    pointer-events: none;
+    color: var(--muted);
+    font-size: 12px;
+    z-index: 2;
+  }
+  .deploy-banner {
+    margin: 8px 0 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(255, 93, 115, 0.12);
+    border: 1px solid var(--red);
+    color: var(--ink);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .deploy-banner.ok {
+    background: rgba(61, 220, 151, 0.08);
+    border-color: var(--green);
+  }
+  #modularBotPanel {
+    margin: 12px 0;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    font-size: 11px;
+  }
+  #modularBotPanel h2 { margin: 0 0 8px; font-size: 13px; }
   .live { width: 8px; height: 8px; border-radius: 99px; background: var(--muted); display: inline-block; }
   .live.on { background: var(--green); }
   .gauge-bar {
@@ -291,16 +330,22 @@
     <button type="button" class="tab on" data-page="desk">Desk</button>
     <button type="button" class="tab" data-page="features">Features</button>
   </nav>
+  <div id="deployBanner" class="deploy-banner" hidden></div>
   <main id="main">
     <div id="deskPanels">
     <section id="trade"><h2>CURRENT TRADE</h2><p class="muted">Connecting…</p></section>
     <section id="gauge"><h2>DISTANCE TO STRIKE</h2><p class="muted">no data</p></section>
     <section id="minichart"><h2>COMPOSITE VS STRIKE</h2><svg id="chartSvg" class="mini-chart" viewBox="0 0 320 128" preserveAspectRatio="none"></svg><div id="chartLabels" class="chart-labels"></div></section>
     <div id="arbitrageChartBlock" class="arb-chart-block">
-      <h2>ARBITRAGE · LIVE COMPOSITE</h2>
-      <p class="muted" id="arbitrageChartNote">Composite vs strike and required TWAP spot.</p>
-      <div id="arbitrageChartHost"></div>
+      <h2>TRADINGVIEW · COMPOSITE CHART</h2>
+      <p class="muted" id="arbitrageChartNote">Venue mids + composite candles vs strike / TWAP (live ticks).</p>
+      <div id="arbitrageChartHost"><div class="chart-overlay-msg" id="chartOverlay">Loading chart…</div></div>
     </div>
+    <section id="modularBotPanel" hidden>
+      <h2>MODULAR BOT · S1–S7</h2>
+      <p class="muted" id="modularBotSummary">Dry-run decisions (paper only).</p>
+      <div id="modularBotRows"></div>
+    </section>
     <section id="suggestion"><h2>SUGGESTION</h2><p class="suggest wait">WAIT</p></section>
     <section id="chop"><h2>CHOP VS REAL</h2></section>
     <section id="strategy">
@@ -361,8 +406,9 @@
     <p class="foot" id="foot">Observe only — no Kalshi orders. Shadow paper scores log when gates pass; settlement uses composite vs strike (approx). Composite lead, BNB, and chop weights are unverified.</p>
   </main>
 </div>
-<script src="/static/lightweight-charts.standalone.js"></script>
+<script src="/static/lightweight-charts.standalone.js?v=4"></script>
 <script>
+const CLIENT_BUILD = "desk-v4-modular-chart";
 const assetOrder = ["BTC", "BNB", "SOL"];
 let asset = localStorage.getItem("desk-asset") || "BTC";
 window.__deskPage = localStorage.getItem("desk-page") || "desk";
@@ -501,7 +547,9 @@ function render(state) {
   renderTrade(view, state);
   renderGauge(view);
   renderMiniChart(view);
+  renderDeployBanner(state);
   renderArbitrageChart(state);
+  renderModularBot(state);
   renderSuggestion(view);
   renderChop(view, state);
   renderStrategy(state, view);
@@ -1735,36 +1783,112 @@ function chartHostSize(host) {
   return { w, h };
 }
 
+function setChartOverlay(text) {
+  let el = document.getElementById("chartOverlay");
+  const host = document.getElementById("arbitrageChartHost");
+  if (!host) return;
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "chartOverlay";
+    el.className = "chart-overlay-msg";
+    host.appendChild(el);
+  }
+  el.textContent = text || "";
+  el.hidden = !text;
+}
+
+function renderDeployBanner(state) {
+  const box = document.getElementById("deployBanner");
+  if (!box) return;
+  const serverBuild = window.__uiBuild || (state && state.ui_build) || "";
+  const hasCharts = !!(state && state.arbitrage_charts);
+  const hasBot = !!(state && state.modular_bot && state.modular_bot.enabled);
+  const libOk = !!window.LightweightCharts;
+  if (!serverBuild || serverBuild !== CLIENT_BUILD || !hasCharts) {
+    box.hidden = false;
+    box.className = "deploy-banner";
+    box.innerHTML =
+      "<strong>Server is behind.</strong> On VPS: <code>cd /root/kalshi-desk && git pull && systemctl restart kalshi-desk</code><br>" +
+      "Phone: hard refresh. Want <code>" + CLIENT_BUILD + "</code> — server reports <code>" + (serverBuild || "missing ui_build") + "</code>.";
+    return;
+  }
+  box.hidden = false;
+  box.className = "deploy-banner ok";
+  box.textContent =
+    "Build " + CLIENT_BUILD + " · chart API ok · modular bot " + (hasBot ? "on" : "off") + " · library " + (libOk ? "loaded" : "loading…");
+}
+
+function renderModularBot(state) {
+  const panel = document.getElementById("modularBotPanel");
+  const rows = document.getElementById("modularBotRows");
+  const sum = document.getElementById("modularBotSummary");
+  if (!panel || !rows) return;
+  const mb = state.modular_bot;
+  if (!mb || !mb.enabled) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = (window.__deskPage || "desk") !== "desk";
+  if (sum) {
+    sum.textContent = "Dry-run: " + (mb.dry_run ? "yes (log only)" : "NO") + " · asset " + asset;
+  }
+  rows.replaceChildren();
+  const decs = (mb.recent_decisions || []).filter((d) => d.asset === asset).slice(0, 6);
+  if (!decs.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "No bot ticks logged yet (wait ~10s after restart).";
+    rows.appendChild(p);
+    return;
+  }
+  for (const d of decs) {
+    const line = document.createElement("div");
+    line.style.marginBottom = "6px";
+    const side = d.proposed_side || "—";
+    const wt = d.would_trade ? "WOULD TRADE" : d.skip_reason || d.first_blocking_gate || "skip";
+    line.textContent =
+      (d.strategies_fired || []).join(",") + " → " + side + " · " + wt + " · T=" + (d.secs_left == null ? "?" : Math.round(d.secs_left)) + "s";
+    rows.appendChild(line);
+  }
+}
+
 function renderArbitrageChart(state) {
   const host = document.getElementById("arbitrageChartHost");
   const note = document.getElementById("arbitrageChartNote");
   if (!host || (window.__deskPage || "desk") !== "desk") return;
   if (!state.arbitrage_charts) {
-    host.replaceChildren();
-    const old = document.createElement("p");
-    old.className = "muted";
-    old.style.margin = "0";
-    old.style.padding = "24px 8px";
-    old.style.textAlign = "center";
-    old.textContent = "Dashboard build is old — run git pull and restart kalshi-desk on the VPS.";
-    host.appendChild(old);
-    if (note) note.textContent = "Arbitrage chart requires a recent deploy.";
+    resetArbChart();
+    setChartOverlay("Old server — git pull + restart kalshi-desk on VPS.");
+    if (note) note.textContent = "Chart needs desk-v4-modular-chart deploy.";
     return;
   }
   const payload = state.arbitrage_charts[asset];
   if (!payload || !payload.ok || !(payload.rows || []).length) {
     resetArbChart();
-    host.replaceChildren();
-    const wait = document.createElement("p");
-    wait.className = "muted";
-    wait.style.margin = "0";
-    wait.style.padding = "24px 8px";
-    wait.style.textAlign = "center";
-    wait.textContent = (payload && payload.note) || ("Waiting for live composite ticks on " + asset + ".");
-    host.appendChild(wait);
+    ensureLightweightCharts().then(() => {
+      if (!host.isConnected) return;
+      if (!arbChartApi) {
+        host.querySelectorAll("canvas, table").forEach((n) => n.remove());
+        const { w, h } = chartHostSize(host);
+        arbChartApi = LightweightCharts.createChart(host, {
+          width: w,
+          height: h,
+          layout: { background: { type: "solid", color: "#10151c" }, textColor: "#e7e1d1" },
+          grid: { vertLines: { color: "rgba(44, 38, 24, 0.6)" }, horzLines: { color: "rgba(44, 38, 24, 0.6)" } },
+          rightPriceScale: { borderColor: "rgba(154, 145, 124, 0.5)" },
+          timeScale: { borderColor: "rgba(154, 145, 124, 0.5)", timeVisible: true },
+        });
+        arbChartSeries = arbChartApi.addLineSeries({ color: "#9a917c", lineWidth: 1 });
+        arbChartSeries.setData([{ time: 0, value: 0 }, { time: 1, value: 0 }]);
+      }
+      const waitMsg = (payload && payload.note) || ("Waiting for live ticks · " + asset + " · open 15m market + feeds");
+      const pts = payload && payload.live_points != null ? " · " + payload.live_points + " point(s)" : "";
+      setChartOverlay("TradingView ready · " + waitMsg + pts);
+    }).catch(() => setChartOverlay("Chart library failed — git pull (needs /static/lightweight-charts.standalone.js)"));
     if (note) note.textContent = "Live composite only · " + asset + (payload && payload.live_points != null ? " · " + payload.live_points + " tick(s)" : "");
     return;
   }
+  setChartOverlay("");
   const rows = payload.rows || [];
   let noteText = "Live composite · " + asset + " · " + rows.length + " tick(s)";
   if (payload.strike != null) noteText += " · strike " + Number(payload.strike).toFixed(2);
@@ -2068,6 +2192,7 @@ fetch("/api/health")
   .catch(() => null)
   .then((h) => {
     if (h && h.ui_build) window.__uiBuild = h.ui_build;
+    if (h && last) renderDeployBanner(last);
   });
 
 pullState().catch(showUnreachable).finally(() => {
