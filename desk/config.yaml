@@ -126,3 +126,54 @@ strategies:
     params:
       trail_retrace: 0.09
       breakeven_after: 0.09
+
+# Modular 15m spot→Kalshi bot (paper / dry-run; does not replace legacy gates_15m entries).
+modular_bot:
+  enabled: true
+  dry_run: true
+  kill_switch: false
+  hard_gates:
+    secs_left_min: 60
+    secs_left_max: 810
+    ask_min_cents: 15
+    ask_max_cents: 85
+    max_spread_cents: 12
+    min_net_edge_cents: -50
+    one_entry_per_market: true
+    ask_band_cents:
+      BNB:
+        min: 20
+        max: 80
+  risk:
+    max_stake_usd: 20
+    daily_loss_cap_usd: 200
+    loss_streak_pause: 8
+  soft_gates:
+    trend_sigma_penalty_cents: 2
+    momentum_penalty_cents: 1.5
+    btc_confirm_enabled: true
+  strategies:
+    s1_stale_quote_lag:
+      enabled: true
+      lookback_s: 10
+      min_move_sigma: 1.5
+      max_repriced_frac: 0.35
+    s2_fair_value_divergence:
+      enabled: true
+      min_divergence_cents: 4
+    s3_settlement_lock:
+      enabled: true
+      secs_left_max: 360
+      min_locked_fraction: 0.55
+      min_cushion_sigmas: 1.2
+    s4_cross_side_arb:
+      enabled: true
+    s5_cross_venue_divergence:
+      enabled: false
+    s6_fade:
+      enabled: true
+      min_kalshi_mid_move_cents: 3
+    s7_consensus:
+      enabled: true
+      require_consensus: false
+      min_agreeing: 2

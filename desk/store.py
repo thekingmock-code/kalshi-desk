@@ -173,6 +173,13 @@ class Store:
             "ALTER TABLE chop_candidates ADD COLUMN chop_log_would_block INTEGER",
             "ALTER TABLE chop_candidates ADD COLUMN chop_log_secs_left_bucket TEXT",
             "ALTER TABLE chop_candidates ADD COLUMN obi_json TEXT",
+            """CREATE TABLE IF NOT EXISTS bot_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                asset TEXT NOT NULL,
+                ticker TEXT,
+                payload TEXT NOT NULL
+            )""",
             """CREATE TABLE IF NOT EXISTS spot_obi_ticks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts REAL NOT NULL,
@@ -675,6 +682,37 @@ class Store:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def add_bot_decision(self, payload: dict) -> None:
+        self.conn.execute(
+            "INSERT INTO bot_decisions (ts, asset, ticker, payload) VALUES (?, ?, ?, ?)",
+            (
+                float(payload.get("ts") or time.time()),
+                payload.get("asset") or "?",
+                payload.get("ticker"),
+                json.dumps(payload),
+            ),
+        )
+        self.conn.commit()
+
+    def bot_decisions(self, limit: int = 200, asset: str | None = None) -> list[dict]:
+        if asset:
+            rows = self.conn.execute(
+                "SELECT payload FROM bot_decisions WHERE asset = ? ORDER BY ts DESC, id DESC LIMIT ?",
+                (asset, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT payload FROM bot_decisions ORDER BY ts DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        out = []
+        for row in rows:
+            try:
+                out.append(json.loads(row["payload"]))
+            except json.JSONDecodeError:
+                continue
+        return out
 
     def settings(self) -> dict:
         rows = self.conn.execute("SELECT key, value FROM settings").fetchall()

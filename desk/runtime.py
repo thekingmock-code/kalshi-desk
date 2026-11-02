@@ -488,6 +488,36 @@ class Desk:
             else None,
             "balances": self._balances_header(assets, rows),
             "arbitrage_charts": arbitrage_charts,
+            "modular_bot": self._modular_bot_snapshot(),
+        }
+
+    def _modular_bot_snapshot(self) -> dict:
+        mcfg = self.cfg.get("modular_bot") or {}
+        if not mcfg.get("enabled"):
+            return {"enabled": False}
+        from desk.engine.modular_bot.reports import strategy_report
+
+        recent = self.store.bot_decisions(limit=30)
+        rows = []
+        for t in self.store.paper_trades(limit=300):
+            if not t.get("settled"):
+                continue
+            rows.append(
+                {
+                    "strategy": t.get("strategy") or "legacy",
+                    "strategies": [t.get("strategy") or "legacy"],
+                    "net_pnl": t.get("net_pnl"),
+                    "won": t.get("right"),
+                    "entry_ask": t.get("ask"),
+                    "hour_et": t.get("hour_et"),
+                    "price_bucket": t.get("edge_bucket"),
+                }
+            )
+        return {
+            "enabled": True,
+            "dry_run": bool(mcfg.get("dry_run", True)),
+            "recent_decisions": recent[:15],
+            "strategy_reports": strategy_report(rows),
         }
 
     def _sample(self, now: float) -> None:
@@ -539,6 +569,85 @@ class Desk:
             self._spot_obi(st, now)
             self._maybe_spot_obi_tick(st, now)
             self._measurement_tick(st, now, px)
+            self._modular_bot_tick(st, now, px)
+
+    def _modular_bot_risk_state(self) -> dict:
+        rows = self.store.paper_trades(limit=80)
+        daily_pnl = 0.0
+        streak = 0
+        for r in rows:
+            if not r.get("settled"):
+                continue
+            pnl = r.get("net_pnl")
+            if pnl is None:
+                continue
+            daily_pnl += float(pnl)
+            if float(pnl) < 0:
+                streak += 1
+            else:
+                break
+        return {"daily_pnl": daily_pnl, "loss_streak": streak}
+
+    def _modular_bot_tick(self, st: AssetRT, now: float, composite: float | None) -> None:
+        mcfg = self.cfg.get("modular_bot") or {}
+        if not mcfg.get("enabled", False):
+            return
+        from desk.engine.modular_bot.context import BotContext
+        from desk.engine.modular_bot.engine import enrich_fair, evaluate_tick
+        from desk.engine.modular_bot.serialize import decision_to_dict
+
+        metrics = self._metrics(st, now)
+        market = st.market or {}
+        close_ts = market.get("close_ts")
+        secs_left = None if close_ts is None else close_ts - now
+        yes_bid, yes_ask = st.book.yes_bid, st.book.yes_ask
+        no_bid, no_ask = st.book.no_bid, st.book.no_ask
+        yes_mid = (yes_bid + yes_ask) / 2 if yes_bid is not None and yes_ask is not None else None
+        no_mid = (no_bid + no_ask) / 2 if no_bid is not None and no_ask is not None else None
+        pos = st.book.position
+        open_side = None
+        if pos and pos.ticker == st.book.ticker:
+            open_side = "UP" if pos.side == "YES" else "DOWN"
+        ctx = BotContext(
+            ts=now,
+            asset=st.name,
+            ticker=st.book.ticker,
+            secs_left=secs_left,
+            strike=st.book.strike,
+            composite=composite,
+            composite_avg_60s=None,
+            samples=list(st.samples),
+            move_1m=metrics.get("move_1m"),
+            move_5m=metrics.get("move_1m"),
+            move_1h=metrics.get("baseline_move"),
+            p_up=None,
+            sigma_t=None,
+            yes_bid=yes_bid,
+            yes_ask=yes_ask,
+            no_bid=no_bid,
+            no_ask=no_ask,
+            yes_mid=yes_mid,
+            no_mid=no_mid,
+            mid_history=list(st.mid_history),
+            kalshi_mid_move_3s=metrics.get("kalshi_mid_move_3s"),
+            composite_pct_move_3s=metrics.get("composite_pct_move_3s"),
+            momentum=metrics.get("momentum"),
+            buy_pct=metrics.get("buy_pct"),
+            vol_ratio=None,
+            btc_momentum=None,
+            feed_ages=metrics.get("feed_ages") or {},
+            already_entered_market=self._paper_buys(st) > 0,
+            has_open_position=pos is not None and pos.ticker == st.book.ticker,
+            open_side=open_side,
+            taker_rate=float(self.cfg["fees"]["taker_rate"]),
+            model_cfg=self.cfg["model"],
+            fees_cfg=self.cfg["fees"],
+            measurements=st.last_meas,
+            risk_state=self._modular_bot_risk_state(),
+        )
+        ctx = enrich_fair(ctx)
+        decision = evaluate_tick(ctx, mcfg)
+        self.store.add_bot_decision(decision_to_dict(decision))
 
     def _measurement_tick(self, st: AssetRT, now: float, composite: float | None) -> None:
         if not (self.cfg.get("paper") or {}).get("enabled"):
