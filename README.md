@@ -52,6 +52,10 @@ Add to `.env` on the server (see `.env.example`):
 
 Commands: `/status`, `/composite` (all venue mids and deviations). Restart `kalshi-desk` after changing env.
 
+## Modular bot (S1–S7, dry-run)
+
+`desk/config.yaml` → `modular_bot` runs each tick **alongside** legacy `gates_15m` paper (does not replace it). Default **`dry_run: true`** logs decisions to SQLite (`bot_decisions`) without new order paths. Strategies: stale-quote lag, fair divergence, settlement lock, cross-side arb, cross-venue (log-only), fade, consensus resolver. API state includes `modular_bot.recent_decisions` and `strategy_reports`. Tests: `desk/tests/test_modular_bot.py`.
+
 ## What the model does
 
 Kalshi settles a 15-minute market on the 60-second index average. YES wins when the closing average is greater than or equal to the opening average, so a tie is YES. The fair probability is a driftless normal around that line, using effective seconds that shrink through the last minute. Fees are the taker schedule rounded up to the next cent. Exits are marked at the bid.
