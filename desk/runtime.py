@@ -80,7 +80,7 @@ from desk.engine.view import (
     shadow_rows_for_ui,
     stamp_rows,
 )
-from desk.feeds import coinbase, kalshi, kraken
+from desk.feeds import kalshi
 from desk.store import Store
 
 ROOT = Path(__file__).resolve().parent
@@ -187,6 +187,9 @@ class Desk:
         )
         if self._creds:
             self._tasks.append(asyncio.create_task(self._poll_private(), name="kalshi-private"))
+        from desk.telegram_bot import run_telegram_bot
+
+        self._tasks.append(asyncio.create_task(run_telegram_bot(self, self._stop), name="telegram"))
         prefs = load_measurement_prefs(self.store.settings())
         for st in self.assets.values():
             st.meas_liq.enabled = bool(prefs.get("liquidation"))
@@ -908,6 +911,8 @@ class Desk:
             momentum_60=metrics.get("momentum_60"),
             signal_hold_secs=signal_hold,
             feed_ages=metrics.get("feed_ages"),
+            venue_quotes=metrics.get("venue_quotes"),
+            composite_median=metrics.get("composite_median"),
             measurements=st.last_meas,
             spot_obi=st.last_obi,
         )
@@ -994,12 +999,17 @@ class Desk:
         stale = float(self.cfg["feeds"]["stale_secs"])
         cb = st.coinbase[0] if st.coinbase and now - st.coinbase[1] <= stale else None
         kr = st.kraken[0] if st.kraken and now - st.kraken[1] <= stale else None
+        venues: dict[str, float] = {}
+        for vname, vstate in (self.venue_states.get(st.name) or {}).items():
+            if vstate.mid is not None and vstate.mid > 0:
+                venues[vname] = float(vstate.mid)
         st.chart_points.append(
             {
                 "t": now,
                 "c": composite,
                 "cb": cb,
                 "kr": kr,
+                "venues": venues,
                 "s": st.book.strike,
             }
         )
@@ -1585,10 +1595,23 @@ class Desk:
     def _metrics(self, st: AssetRT, now: float) -> dict:
         price, names, age = self._composite(st, now)
         feed_ages = {}
-        if st.coinbase:
-            feed_ages["coinbase"] = round(now - st.coinbase[1], 2)
-        if st.kraken:
-            feed_ages["kraken"] = round(now - st.kraken[1], 2)
+        for vname, vstate in (self.venue_states.get(st.name) or {}).items():
+            if vstate.last_tick_ts_ms:
+                feed_ages[vname] = round(now - vstate.last_tick_ts_ms / 1000.0, 2)
+        diag = self._last_composite_diag.get(st.name) or {}
+        venue_quotes = []
+        for vname in sorted((self.venue_states.get(st.name) or {}).keys()):
+            vstate = self.venue_states[st.name][vname]
+            vrow = (diag.get("venues") or {}).get(vname) or {}
+            venue_quotes.append(
+                {
+                    "name": vname,
+                    "mid": vstate.mid,
+                    "age_s": feed_ages.get(vname),
+                    "deviation_usd": vrow.get("deviation_usd"),
+                    "in_composite": vname in names,
+                }
+            )
         window = float(self.cfg["feeds"]["vol_window_secs"])
         base_window = float(self.cfg["feeds"]["baseline_window_secs"])
         samples = list(st.samples)
@@ -1614,6 +1637,8 @@ class Desk:
             "composite_pct_move_3s": self._pct_move_3s(st, now, price),
             "kalshi_mid_move_3s": self._mid_move_3s(st, now),
             "tunable_params": self._params_for(sid, st.name),
+            "venue_quotes": venue_quotes,
+            "composite_median": diag.get("median"),
         }
 
     def _buy_pct(self, st: AssetRT, now: float) -> float | None:

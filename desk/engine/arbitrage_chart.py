@@ -32,6 +32,12 @@ def series_from_composite_points(
     if strike is None:
         return {"ok": False, "source": "live", "rows": []}
 
+    venue_names: set[str] = set()
+    for pt in points:
+        for vname in pt.get("venues") or {}:
+            venue_names.add(str(vname))
+    venue_series: dict[str, list[dict]] = {name: [] for name in sorted(venue_names)}
+
     rows: list[dict] = []
     window: list[float] = []
     prev_c: float | None = None
@@ -64,6 +70,10 @@ def series_from_composite_points(
                 "signal": "none",
             }
         )
+        for vname in venue_series:
+            vm = (pt.get("venues") or {}).get(vname)
+            if vm is not None:
+                venue_series[vname].append({"time": t, "value": float(vm)})
         prev_c = c
     return {
         "ok": True,
@@ -71,6 +81,7 @@ def series_from_composite_points(
         "asset": None,
         "strike": strike,
         "rows": rows,
+        "venue_series": venue_series,
     }
 
 

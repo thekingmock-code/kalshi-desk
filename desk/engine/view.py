@@ -83,6 +83,8 @@ def build_asset(
     signal_hold_secs: float | None = None,
     settings: dict | None = None,
     feed_ages: dict | None = None,
+    venue_quotes: list | None = None,
+    composite_median: float | None = None,
     measurements: dict | None = None,
     spot_obi: dict | None = None,
 ) -> dict:
@@ -310,6 +312,9 @@ def build_asset(
             "edge_up_entry": edge_up_entry,
             "edge_down_entry": edge_down_entry,
             "ref": ref,
+            "feed_ages": ages,
+            "venue_quotes": venue_quotes or [],
+            "composite_median": composite_median,
         },
         "trade": trade,
         "paper_entry": paper_entry,

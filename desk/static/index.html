@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>XVANTAGE // 15m</title>
-<script src="/static/lightweight-charts.standalone.js" defer></script>
 <style>
   :root {
     color-scheme: dark;
@@ -362,6 +361,7 @@
     <p class="foot" id="foot">Observe only — no Kalshi orders. Shadow paper scores log when gates pass; settlement uses composite vs strike (approx). Composite lead, BNB, and chop weights are unverified.</p>
   </main>
 </div>
+<script src="/static/lightweight-charts.standalone.js"></script>
 <script>
 const assetOrder = ["BTC", "BNB", "SOL"];
 let asset = localStorage.getItem("desk-asset") || "BTC";
@@ -485,7 +485,8 @@ function render(state) {
   if (!state.assets[asset]) asset = (state.asset_order || assetOrder)[0];
   document.getElementById("clock").textContent = state.et || "";
   renderBalanceBar(state);
-  setLinkStatus((wsConnected ? "Live (WebSocket)" : "Live (HTTP poll)") + " · updated " + (state.et || "—"));
+  const buildTag = window.__uiBuild ? " · build " + window.__uiBuild : "";
+  setLinkStatus((wsConnected ? "Live (WebSocket)" : "Live (HTTP poll)") + " · updated " + (state.et || "—") + buildTag);
   const note = document.getElementById("note");
   const view0 = state.assets[asset];
   const modeLbl = view0?.paper_entry?.gate_mode_label;
@@ -871,7 +872,27 @@ function renderTrade(view, state) {
   const fresh = (bot.feeds || []).join(" + ") || "no fresh feed";
   const stale = Object.keys(ages).filter((name) => !(bot.feeds || []).includes(name));
   const staleNote = stale.map((name) => name + " " + Number(ages[name]).toFixed(0) + "s old").join(", ");
-  mktBlock.appendChild(line("Composite", spot(bot.composite) + " · " + fresh + (staleNote ? " · " + staleNote : "")));
+  const med = bot.composite_median;
+  let compLine = spot(bot.composite) + " · " + fresh;
+  if (med != null && bot.composite != null) compLine += " · median " + spot(med);
+  if (staleNote) compLine += " · stale: " + staleNote;
+  mktBlock.appendChild(line("Composite", compLine));
+  const vq = bot.venue_quotes || [];
+  if (vq.length) {
+    const vgrid = document.createElement("div");
+    vgrid.className = "venue-grid";
+    vgrid.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:4px 10px;font-size:11px;margin:6px 0 2px";
+    for (const v of vq) {
+      const cell = document.createElement("div");
+      const inC = v.in_composite ? "" : " · out";
+      const age = v.age_s == null ? "—" : Number(v.age_s).toFixed(1) + "s";
+      const dev = v.deviation_usd == null ? "" : " · Δ" + Number(v.deviation_usd).toFixed(2);
+      cell.textContent = v.name + ": " + (v.mid == null ? "—" : spot(v.mid)) + dev + " · " + age + inC;
+      if (!v.in_composite) cell.style.opacity = "0.65";
+      vgrid.appendChild(cell);
+    }
+    mktBlock.appendChild(vgrid);
+  }
   mktBlock.appendChild(line("Lag", lagText(bot.lag)));
   const pupLine = bot.p_up == null ? "—" : Math.round(bot.p_up * 100) + "%";
   const pupAvg = bot.p_up_avgmodel == null ? "—" : Math.round(bot.p_up_avgmodel * 100) + "%";
@@ -1672,10 +1693,12 @@ function renderMeasurementUI(state) {
 
 const LW_CHARTS_LOCAL = "/static/lightweight-charts.standalone.js";
 const LW_CHARTS_CDN = "https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js";
+const VENUE_CHART_COLORS = { coinbase: "#7db7ff", kraken: "#e8c547", bitstamp: "#3ddc97", gemini: "#c792ff" };
 let arbChartApi = null;
 let arbChartSeries = null;
 let arbChartStrike = null;
 let arbChartRequired = null;
+let arbChartVenues = {};
 let arbChartKey = "";
 let arbChartAsset = "";
 
@@ -1697,6 +1720,21 @@ function ensureLightweightCharts() {
   return window.__lwChartsLoading;
 }
 
+function resetArbChart() {
+  if (arbChartApi) {
+    arbChartApi.remove();
+  }
+  arbChartApi = arbChartSeries = arbChartStrike = arbChartRequired = null;
+  arbChartVenues = {};
+  arbChartKey = "";
+}
+
+function chartHostSize(host) {
+  const w = Math.max(host.clientWidth || 0, host.offsetWidth || 0, 280);
+  const h = Math.max(host.clientHeight || 0, host.offsetHeight || 0, 240);
+  return { w, h };
+}
+
 function renderArbitrageChart(state) {
   const host = document.getElementById("arbitrageChartHost");
   const note = document.getElementById("arbitrageChartNote");
@@ -1715,11 +1753,7 @@ function renderArbitrageChart(state) {
   }
   const payload = state.arbitrage_charts[asset];
   if (!payload || !payload.ok || !(payload.rows || []).length) {
-    if (arbChartApi) {
-      arbChartApi.remove();
-      arbChartApi = arbChartSeries = arbChartStrike = arbChartRequired = null;
-      arbChartKey = "";
-    }
+    resetArbChart();
     host.replaceChildren();
     const wait = document.createElement("p");
     wait.className = "muted";
@@ -1736,18 +1770,19 @@ function renderArbitrageChart(state) {
   if (payload.strike != null) noteText += " · strike " + Number(payload.strike).toFixed(2);
   if (note) note.textContent = noteText;
   if (arbChartAsset !== asset && arbChartApi) {
-    arbChartApi.remove();
-    arbChartApi = arbChartSeries = arbChartStrike = arbChartRequired = null;
-    arbChartKey = "";
+    resetArbChart();
   }
   arbChartAsset = asset;
-  const key = asset + "|" + rows.length + "|" + (rows.length ? rows[rows.length - 1].time : 0);
+  const venueSeries = payload.venue_series || {};
+  const venueKey = Object.keys(venueSeries).sort().join(",");
+  const key = asset + "|" + rows.length + "|" + (rows.length ? rows[rows.length - 1].time : 0) + "|" + venueKey;
   ensureLightweightCharts().then(() => {
     if (!host.isConnected) return;
-    if (arbChartKey !== key || !arbChartApi) {
+    const needBuild = arbChartKey !== key || !arbChartApi;
+    if (needBuild) {
+      resetArbChart();
       host.replaceChildren();
-      const w = Math.max(host.clientWidth || 0, 280);
-      const h = Math.max(host.clientHeight || 0, 240);
+      const { w, h } = chartHostSize(host);
       arbChartApi = LightweightCharts.createChart(host, {
         width: w,
         height: h,
@@ -1756,9 +1791,21 @@ function renderArbitrageChart(state) {
         rightPriceScale: { borderColor: "rgba(154, 145, 124, 0.5)" },
         timeScale: { borderColor: "rgba(154, 145, 124, 0.5)", timeVisible: true, secondsVisible: true },
       });
+      for (const [vname, vrows] of Object.entries(venueSeries)) {
+        if (!vrows || !vrows.length) continue;
+        arbChartVenues[vname] = arbChartApi.addLineSeries({
+          color: VENUE_CHART_COLORS[vname] || "#9a917c",
+          lineWidth: 1,
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          title: vname,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+      }
       arbChartSeries = arbChartApi.addCandlestickSeries({
         upColor: "#3ddc97", downColor: "#ff5d73", borderVisible: false,
         wickUpColor: "#3ddc97", wickDownColor: "#ff5d73",
+        title: "Composite",
       });
       arbChartStrike = arbChartApi.addLineSeries({
         color: "#e8c547", lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, title: "Strike",
@@ -1770,7 +1817,11 @@ function renderArbitrageChart(state) {
       if (!window.__arbChartResize) {
         window.__arbChartResize = true;
         window.addEventListener("resize", () => {
-          if (arbChartApi && host) arbChartApi.applyOptions({ width: host.clientWidth });
+          const hEl = document.getElementById("arbitrageChartHost");
+          if (arbChartApi && hEl) {
+            const sz = chartHostSize(hEl);
+            arbChartApi.applyOptions({ width: sz.w, height: sz.h });
+          }
         });
       }
     }
@@ -1778,6 +1829,9 @@ function renderArbitrageChart(state) {
       time: d.time, open: d.open, high: d.high, low: d.low, close: d.close,
     }));
     try {
+      for (const [vname, series] of Object.entries(arbChartVenues)) {
+        series.setData(venueSeries[vname] || []);
+      }
       arbChartSeries.setData(candles);
       arbChartStrike.setData(rows.map((d) => ({ time: d.time, value: d.strike })));
       arbChartRequired.setData(rows.map((d) => ({ time: d.time, value: d.required_spot })));
@@ -2008,6 +2062,13 @@ function connect() {
     setTimeout(connect, 3000);
   };
 }
+
+fetch("/api/health")
+  .then((r) => (r.ok ? r.json() : null))
+  .catch(() => null)
+  .then((h) => {
+    if (h && h.ui_build) window.__uiBuild = h.ui_build;
+  });
 
 pullState().catch(showUnreachable).finally(() => {
   connect();

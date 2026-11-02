@@ -16,6 +16,22 @@ def test_live_series_from_points():
     assert out["rows"][-1]["close"] == 65000.0 + 19 * 0.5
 
 
+def test_live_series_includes_venue_lines():
+    pts = [
+        {
+            "t": 1000 + i,
+            "c": 65000.0 + i,
+            "s": 65000.0,
+            "venues": {"coinbase": 65000.0 + i, "kraken": 65000.0 + i - 1},
+        }
+        for i in range(5)
+    ]
+    out = series_from_composite_points(pts, strike=65000.0)
+    assert out["ok"]
+    assert set(out["venue_series"].keys()) == {"coinbase", "kraken"}
+    assert len(out["venue_series"]["coinbase"]) == 5
+
+
 def test_live_series_dedupes_same_second_timestamps():
     pts = [{"t": 1000.1, "c": 65000.0, "s": 65000.0}, {"t": 1000.8, "c": 65001.0, "s": 65000.0}]
     out = series_from_composite_points(pts, strike=65000.0)
